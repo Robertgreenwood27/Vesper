@@ -1,0 +1,154 @@
+{
+  "schema_version": "1.0",
+  "generated_for": "Bothria Silk Lab - procedural spider locomotion (Three.js / glTF)",
+  "source_model": "black_widow.blend",
+  "export_file": "black_widow_procedural_rig.glb",
+  "blender_version": "4.5.3 LTS",
+
+  "units": {
+    "system": "metric",
+    "unit_scale": 1.0,
+    "note": "1 Blender unit = 1 meter as authored, but the model is at game scale (see dimensions). Runtime may scale SpiderRoot freely; all bones are scale 1,1,1.",
+    "object_scale": [1.0, 1.0, 1.0],
+    "object_rotation_applied": true,
+    "object_location_applied": true
+  },
+
+  "coordinate_conventions": {
+    "description": "One consistent convention across the whole armature. Values given in BOTH the Blender authoring space (Z-up) and the exported glTF space (Y-up). The glTF exporter maps (x,y,z)_blender -> (x, z, -y)_gltf.",
+    "blender_space": {
+      "forward": "-X",
+      "up_dorsal": "+Z",
+      "right": "+Y",
+      "left": "-Y"
+    },
+    "gltf_threejs_space": {
+      "forward": "-X",
+      "up_dorsal": "+Y",
+      "right": "-Z",
+      "left": "+Z",
+      "note": "In Three.js the model faces -X with +Y up. This is NOT the Three.js default of -Z forward; read 'forward' from this file rather than assuming. To make the model face -Z instead, apply a -90 deg rotation about +Y to SpiderRoot (or the loaded scene) at runtime."
+    },
+    "bone_local_axes": {
+      "primary_axis": "bone local +Y points from head to tail (along the limb segment)",
+      "dorsal_axis": "bone local +Z aligned toward world/dorsal up (roll normalized via align-to-global-Z)",
+      "bend_axis": "bone local X is the primary hinge/bend axis for leg joints",
+      "mirror": "Left and right corresponding bones have mirror-symmetric local frames; applying an equal local rotation to a L/R pair produces mirrored motion."
+    }
+  },
+
+  "root_bone": "SpiderRoot",
+  "thorax_bone": "Thorax",
+  "pedicel_bone": "Pedicel",
+  "abdomen_bone": "Abdomen",
+  "head_bone": "Head",
+
+  "reference_bones": {
+    "HeadReference": "forward-facing reference at the front tip of the head (non-deform)",
+    "SupportReference": "preferred central support position beneath the thorax (non-deform)",
+    "BodyCenter": "thorax/body center marker (non-deform)",
+    "ForwardReference": "points along spider forward (non-deform)",
+    "DorsalReference": "points along spider dorsal up (non-deform)"
+  },
+
+  "spinnerets": {
+    "Spinneret_Center": "central silk emission point at posterior-ventral abdomen tip",
+    "Spinneret_L": "left silk emission point",
+    "Spinneret_R": "right silk emission point",
+    "note": "Non-deform bones. Query their world positions at runtime to originate silk."
+  },
+
+  "legs": {
+    "numbering": "1=front, 4=rear; L=left(-Y), R=right(+Y)",
+    "order_front_to_rear": ["1", "2", "3", "4"],
+    "list": ["L1", "L2", "L3", "L4", "R1", "R2", "R3", "R4"],
+    "chain_order_5seg": ["Coxa", "Femur", "Patella", "Tibia", "Metatarsus", "FootTip"],
+    "chain_order_6seg": ["Coxa", "Femur", "Patella", "Tibia", "Metatarsus", "Tarsus", "FootTip"],
+    "per_leg": {
+      "L1": {"side": "left", "index": 1, "chain": ["Leg_L1_Coxa", "Leg_L1_Femur", "Leg_L1_Patella", "Leg_L1_Tibia", "Leg_L1_Metatarsus", "Leg_L1_FootTip"], "foottip": "Leg_L1_FootTip", "foothome": "FootHome_L1", "deform_segments": 5},
+      "L2": {"side": "left", "index": 2, "chain": ["Leg_L2_Coxa", "Leg_L2_Femur", "Leg_L2_Patella", "Leg_L2_Tibia", "Leg_L2_Metatarsus", "Leg_L2_FootTip"], "foottip": "Leg_L2_FootTip", "foothome": "FootHome_L2", "deform_segments": 5},
+      "L3": {"side": "left", "index": 3, "chain": ["Leg_L3_Coxa", "Leg_L3_Femur", "Leg_L3_Patella", "Leg_L3_Tibia", "Leg_L3_Metatarsus", "Leg_L3_FootTip"], "foottip": "Leg_L3_FootTip", "foothome": "FootHome_L3", "deform_segments": 5},
+      "L4": {"side": "left", "index": 4, "chain": ["Leg_L4_Coxa", "Leg_L4_Femur", "Leg_L4_Patella", "Leg_L4_Tibia", "Leg_L4_Metatarsus", "Leg_L4_Tarsus", "Leg_L4_FootTip"], "foottip": "Leg_L4_FootTip", "foothome": "FootHome_L4", "deform_segments": 6},
+      "R1": {"side": "right", "index": 1, "chain": ["Leg_R1_Coxa", "Leg_R1_Femur", "Leg_R1_Patella", "Leg_R1_Tibia", "Leg_R1_Metatarsus", "Leg_R1_FootTip"], "foottip": "Leg_R1_FootTip", "foothome": "FootHome_R1", "deform_segments": 5},
+      "R2": {"side": "right", "index": 2, "chain": ["Leg_R2_Coxa", "Leg_R2_Femur", "Leg_R2_Patella", "Leg_R2_Tibia", "Leg_R2_Metatarsus", "Leg_R2_FootTip"], "foottip": "Leg_R2_FootTip", "foothome": "FootHome_R2", "deform_segments": 5},
+      "R3": {"side": "right", "index": 3, "chain": ["Leg_R3_Coxa", "Leg_R3_Femur", "Leg_R3_Patella", "Leg_R3_Tibia", "Leg_R3_Metatarsus", "Leg_R3_FootTip"], "foottip": "Leg_R3_FootTip", "foothome": "FootHome_R3", "deform_segments": 5},
+      "R4": {"side": "right", "index": 4, "chain": ["Leg_R4_Coxa", "Leg_R4_Femur", "Leg_R4_Patella", "Leg_R4_Tibia", "Leg_R4_Metatarsus", "Leg_R4_Tarsus", "Leg_R4_FootTip"], "foottip": "Leg_R4_FootTip", "foothome": "FootHome_R4", "deform_segments": 6}
+    }
+  },
+
+  "foot_tips": ["Leg_L1_FootTip", "Leg_L2_FootTip", "Leg_L3_FootTip", "Leg_L4_FootTip", "Leg_R1_FootTip", "Leg_R2_FootTip", "Leg_R3_FootTip", "Leg_R4_FootTip"],
+  "foot_homes": ["FootHome_L1", "FootHome_L2", "FootHome_L3", "FootHome_L4", "FootHome_R1", "FootHome_R2", "FootHome_R3", "FootHome_R4"],
+
+  "pedipalps": {
+    "left": ["Pedipalp_L_01", "Pedipalp_L_02", "Pedipalp_L_03", "Pedipalp_L_04"],
+    "left_tip": "Pedipalp_L_Tip",
+    "right": ["Pedipalp_R_01", "Pedipalp_R_02", "Pedipalp_R_03", "Pedipalp_R_04"],
+    "right_tip": "Pedipalp_R_Tip"
+  },
+
+  "fangs": {
+    "left": ["Fang_L_01", "Fang_L_02", "Fang_L_03"],
+    "right": ["Fang_R_01"],
+    "note": "Chelicerae/fangs. Optional and cosmetic. Asymmetric in the source model (left=3 bones, right=1)."
+  },
+
+  "reach_units": {
+    "note": "Distance from Coxa head to FootTip head, in model units. 'max' = fully extended (sum of segment lengths). 'comfortable' = rest-pose distance. 'min' = approximate fully-compressed reach (~0.35 x max, validate in engine).",
+    "per_leg": {
+      "L1": {"max": 0.951, "comfortable": 0.770, "min": 0.333},
+      "L2": {"max": 0.885, "comfortable": 0.649, "min": 0.310},
+      "L3": {"max": 0.873, "comfortable": 0.667, "min": 0.306},
+      "L4": {"max": 0.973, "comfortable": 0.827, "min": 0.341},
+      "R1": {"max": 0.950, "comfortable": 0.770, "min": 0.333},
+      "R2": {"max": 0.889, "comfortable": 0.649, "min": 0.311},
+      "R3": {"max": 0.878, "comfortable": 0.667, "min": 0.307},
+      "R4": {"max": 0.973, "comfortable": 0.827, "min": 0.341}
+    },
+    "aggregate": {"max_reach": 0.97, "comfortable_reach": 0.72, "min_compressed_reach": 0.32}
+  },
+
+  "segment_lengths_model_units": {
+    "L1": {"Coxa": 0.137, "Femur": 0.321, "Patella": 0.055, "Tibia": 0.212, "Metatarsus": 0.227},
+    "L2": {"Coxa": 0.147, "Femur": 0.303, "Patella": 0.064, "Tibia": 0.202, "Metatarsus": 0.170},
+    "L3": {"Coxa": 0.154, "Femur": 0.318, "Patella": 0.059, "Tibia": 0.217, "Metatarsus": 0.124},
+    "L4": {"Coxa": 0.158, "Femur": 0.222, "Patella": 0.192, "Tibia": 0.062, "Metatarsus": 0.205, "Tarsus": 0.135},
+    "R1": {"Coxa": 0.136, "Femur": 0.321, "Patella": 0.055, "Tibia": 0.212, "Metatarsus": 0.227},
+    "R2": {"Coxa": 0.145, "Femur": 0.303, "Patella": 0.064, "Tibia": 0.202, "Metatarsus": 0.175},
+    "R3": {"Coxa": 0.152, "Femur": 0.318, "Patella": 0.059, "Tibia": 0.217, "Metatarsus": 0.132},
+    "R4": {"Coxa": 0.156, "Femur": 0.222, "Patella": 0.192, "Tibia": 0.062, "Metatarsus": 0.205, "Tarsus": 0.137}
+  },
+
+  "neutral_pose": {
+    "is_rest_pose": true,
+    "description": "The armature rest pose IS the neutral procedural stance. No separate animation clip is required.",
+    "rest_knee_angle_deg": {"L1": 134.8, "L2": 103.4, "L3": 104.8, "L4": 151.8, "R1": 134.8, "R2": 103.4, "R3": 104.8, "R4": 151.8},
+    "body_clearance_above_foot_plane": 0.11,
+    "note": "No leg is straight (all knee angles < 152 deg), so procedural IK has an unambiguous preferred bend direction."
+  },
+
+  "recommended_joint_limits_deg": {
+    "note": "APPROXIMATE, biologically plausible ranges for the runtime to reject impossible footholds. NOT enforced by Blender constraints (none survive glTF). Angles are local-space relative to the bone axes above: bend = rotation about local X (primary hinge), swing = about local Z, twist = about local Y (keep near zero). Validate/tune in engine.",
+    "Coxa": {"bend_x": [-15, 25], "swing_z": [-30, 30], "twist_y": [-10, 10]},
+    "Femur": {"bend_x": [-20, 80], "swing_z": [-15, 15], "twist_y": [-10, 10]},
+    "Patella": {"bend_x": [-10, 45], "swing_z": [-5, 5], "twist_y": [-5, 5]},
+    "Tibia": {"bend_x": [-60, 20], "swing_z": [-5, 5], "twist_y": [-5, 5]},
+    "Metatarsus": {"bend_x": [-45, 30], "swing_z": [-10, 10], "twist_y": [-5, 5]},
+    "Tarsus": {"bend_x": [-25, 25], "swing_z": [-10, 10], "twist_y": [-5, 5]}
+  },
+
+  "deform_bone_count": 58,
+  "reference_bone_count": 27,
+  "total_bone_count": 85,
+  "mesh_object": "Black_widow_04",
+  "mesh_vertex_count": 60057,
+  "max_skin_influences_per_vertex": 4,
+
+  "notes_asymmetry_and_limitations": [
+    "Legs L4 and R4 (rear) carry an extra Tarsus segment (6 deform bones); legs 1-3 have 5. Every leg has Coxa, Femur, Patella, Tibia, Metatarsus and a FootTip; the two rear legs additionally have Tarsus. FootTip is present and correctly placed at the distal silk-contact point on all 8 legs.",
+    "Chelicerae/fangs are asymmetric in the source: Fang_L has 3 bones, Fang_R has 1. Cosmetic only.",
+    "The source mesh is very slightly asymmetric left/right (< ~0.03 units, < ~1 deg). Bone rolls were normalized (local Z toward global up), giving mirror-symmetric L/R frames to within that residual source asymmetry (max axis deviation ~0.85 deg).",
+    "A fur particle system (hair) exists in the .blend but is intentionally excluded from the GLB (glTF has no hair representation). Fur can be re-created procedurally in Three.js if desired.",
+    "No Blender IK / Follow-Path / driver / custom-property behavior is exported; the skeleton is pure FK and must be driven by the Three.js locomotion system.",
+    "FootHome_* bones are static neutral-stance references parented to Thorax; they are NOT live IK targets. Runtime creates its own dynamic foot-contact targets."
+  ]
+}

@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#050504" />
+    <meta
+      name="description"
+      content="Vesper — an autonomous black widow who lives in her own responsive web."
+    />
+    <title>Vesper · Autonomous Black Widow</title>
+  </head>
+  <body>
+    <main id="habitat" aria-label="Vesper's interactive habitat">
+      <canvas id="stage" aria-label="A three-dimensional black widow habitat"></canvas>
+
+      <div class="atmosphere" aria-hidden="true">
+        <span class="halo"></span>
+        <span class="vignette"></span>
+      </div>
+
+      <header class="masthead">
+        <a class="brand" href="#pet-card" aria-label="Skip to Vesper's status">
+          <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+          <span>
+            <strong>LATRODECTUS</strong>
+            <small>domestic observation no. 01</small>
+          </span>
+        </a>
+        <div class="live-indicator"><i></i> habitat live</div>
+      </header>
+
+      <section class="pet-card" id="pet-card" aria-label="Pet status">
+        <p class="kicker">your wife-approved widow</p>
+        <div class="name-row">
+          <h1 id="pet-name">VESPER</h1>
+          <button class="text-button" data-action="rename" aria-label="Rename your black widow">
+            rename
+          </button>
+        </div>
+        <p class="species">Southern black widow <em>· Latrodectus mactans</em></p>
+
+        <div class="mood-line">
+          <span class="pulse" aria-hidden="true"></span>
+          <span id="state-label">WAKING</span>
+          <span class="mood-detail" id="activity">finding every foot</span>
+        </div>
+
+        <dl class="vitals">
+          <div>
+            <dt>familiarity</dt>
+            <dd><span class="meter"><i id="bond-meter"></i></span><b id="bond-label">new</b></dd>
+          </div>
+          <div>
+            <dt>appetite</dt>
+            <dd><span class="meter warm"><i id="hunger-meter"></i></span><b id="hunger-label">patient</b></dd>
+          </div>
+        </dl>
+
+        <p class="memory" id="memory-line">She has not met you yet.</p>
+      </section>
+
+      <aside class="observation" aria-live="polite">
+        <p>FIELD NOTE <span id="clock">00:00</span></p>
+        <blockquote id="status">The web is settling before she arrives.</blockquote>
+      </aside>
+
+      <div class="reticle" id="reticle" aria-hidden="true"><i></i></div>
+      <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+      <nav class="care-tray" aria-label="Care and interaction controls">
+        <button class="care-action primary" data-action="feed">
+          <span class="action-icon moth-icon" aria-hidden="true"><i></i></span>
+          <span><strong>Offer moth</strong><small>place prey on her silk</small></span>
+        </button>
+        <button class="care-action" data-action="signal">
+          <span class="action-icon signal-icon" aria-hidden="true"><i></i></span>
+          <span><strong>Touch the web</strong><small>let her feel you</small></span>
+        </button>
+        <button class="care-action" data-action="retreat">
+          <span class="action-icon home-icon" aria-hidden="true"><i></i></span>
+          <span><strong>Retreat</strong><small>send her somewhere safe</small></span>
+        </button>
+        <button class="round-action" data-action="follow" aria-label="Follow Vesper with the camera" aria-pressed="false">
+          <span class="eye-icon" aria-hidden="true"></span>
+        </button>
+        <button class="round-action" data-action="lights" aria-label="Toggle red observation light" aria-pressed="false">
+          <span class="moon-icon" aria-hidden="true"></span>
+        </button>
+      </nav>
+
+      <p class="instruction"><span>click any strand</span> and she will decide how to get there</p>
+    </main>
+
+    <script type="module" src="/src/demo/showcase.ts"></script>
+  </body>
+</html>
