@@ -28,6 +28,18 @@ Open `http://localhost:5173`.
 Her name, appetite, familiarity, visits, and feedings are stored locally in the
 browser.
 
+## Autonomous life
+
+Vesper does not wait for input. Her dominant instinct shifts with appetite,
+familiarity, recent contact, and the local time of day. Left alone, she patrols
+anchors, seeks shadow, listens through the silk, grooms, repairs the open web,
+and can hunt wild gnats that blunder into it. Fresh safety lines remain visible
+for a while before fading into the older web.
+
+The **silk memory** records her latest self-directed choices across visits. If
+you return after time away, the habitat also recalls what she did while the room
+belonged to her.
+
 ## Architecture
 
 ```text

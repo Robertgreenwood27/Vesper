@@ -23,6 +23,9 @@ const petName = document.getElementById("pet-name") as HTMLElement;
 const clock = document.getElementById("clock") as HTMLElement;
 const toast = document.getElementById("toast") as HTMLElement;
 const reticle = document.getElementById("reticle") as HTMLElement;
+const instinctLabel = document.getElementById("instinct-label") as HTMLElement;
+const autonomyCount = document.getElementById("autonomy-count") as HTMLElement;
+const autonomyLog = document.getElementById("autonomy-log") as HTMLOListElement;
 const feedButton = document.querySelector<HTMLButtonElement>("[data-action='feed']");
 
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
@@ -203,6 +206,8 @@ interface PetMemory {
   visits: number;
   feedings: number;
   lastVisit: number;
+  autonomousActs: number;
+  silkMemories: string[];
 }
 
 type PetMode =
@@ -212,8 +217,12 @@ type PetMode =
   | "listening"
   | "stalking"
   | "feeding"
+  | "repairing"
+  | "grooming"
   | "retreating"
   | "resting";
+
+type Instinct = "hunt" | "repair" | "shelter" | "explore" | "listen" | "groom";
 
 const MEMORY_KEY = "pet-black-widow:vesper:v1";
 const nowAtLoad = Date.now();
@@ -226,6 +235,8 @@ function readMemory(): PetMemory {
     visits: 0,
     feedings: 0,
     lastVisit: 0,
+    autonomousActs: 0,
+    silkMemories: [],
   };
   try {
     const saved = JSON.parse(localStorage.getItem(MEMORY_KEY) ?? "null") as Partial<PetMemory> | null;
@@ -238,6 +249,10 @@ function readMemory(): PetMemory {
       visits: Math.max(0, Math.floor(saved.visits ?? 0)),
       feedings: Math.max(0, Math.floor(saved.feedings ?? 0)),
       lastVisit: saved.lastVisit ?? 0,
+      autonomousActs: Math.max(0, Math.floor(saved.autonomousActs ?? 0)),
+      silkMemories: Array.isArray(saved.silkMemories)
+        ? saved.silkMemories.filter((item): item is string => typeof item === "string").slice(0, 3)
+        : [],
     };
   } catch {
     return fallback;
@@ -262,9 +277,116 @@ let mothAddress: { strandId: string; t: number } | null = null;
 let mothStage: "none" | "noticed" | "hunting" | "caught" = "none";
 let mothTimer = 0;
 let nextMothTremor = 0;
+let mothSource: "keeper" | "wild" = "keeper";
+let nextWildPreyAt = 38 + Math.random() * 34;
+let freshSilk: THREE.Line | null = null;
+let freshSilkPoints: THREE.Vector3[] = [];
+const fadingSilk: Array<{ line: THREE.Line; age: number }> = [];
 const petWorldPosition = new THREE.Vector3();
 const mothWorldPosition = new THREE.Vector3();
 const homeWorldPosition = new THREE.Vector3();
+let awayMemory = "";
+
+function rememberAutonomousAct(note: string): void {
+  memory.autonomousActs += 1;
+  memory.silkMemories = [note, ...memory.silkMemories.filter((item) => item !== note)].slice(0, 3);
+  saveMemory();
+}
+
+function dominantInstinct(): Instinct {
+  const hour = new Date().getHours();
+  const isNight = hour >= 19 || hour < 6;
+  if (moth || memory.hunger >= 72) return "hunt";
+  if (petMode === "repairing") return "repair";
+  if (petMode === "listening" || habitatTime - lastUserAction < 9) return "listen";
+  if (petMode === "grooming" || memory.hunger < 24) return "groom";
+  if (!isNight && memory.bond < 45) return "shelter";
+  return isNight ? "explore" : "shelter";
+}
+
+function renderSilkMemory(): void {
+  instinctLabel.textContent = dominantInstinct();
+  autonomyCount.textContent = memory.autonomousActs.toString().padStart(3, "0");
+  autonomyLog.replaceChildren(
+    ...memory.silkMemories.map((note) => {
+      const item = document.createElement("li");
+      item.textContent = note;
+      return item;
+    }),
+  );
+}
+
+function reconcileTimeAway(): void {
+  if (previousVisit <= 0) return;
+  const hoursAway = Math.max(0, (nowAtLoad - previousVisit) / 3_600_000);
+  if (hoursAway < 1.5) return;
+
+  if (hoursAway > 30) {
+    awayMemory = "She rebuilt the quietest line while the room belonged to her.";
+  } else if (memory.hunger >= 68) {
+    awayMemory = "She hunted the outer silk, but kept listening for your signal.";
+  } else if (new Date().getHours() >= 7 && new Date().getHours() < 19) {
+    awayMemory = "She returned to shadow before the room brightened.";
+  } else {
+    awayMemory = "She patrolled the anchors after the house went quiet.";
+  }
+  rememberAutonomousAct(awayMemory);
+}
+
+function beginSilkRepair(): void {
+  if (!loadedRig || freshSilk) return;
+  loadedRig.rootObject.getWorldPosition(petWorldPosition);
+  freshSilkPoints = [petWorldPosition.clone()];
+  freshSilk = new THREE.Line(
+    new THREE.BufferGeometry().setFromPoints(freshSilkPoints),
+    new THREE.LineBasicMaterial({
+      color: 0xded8cb,
+      transparent: true,
+      opacity: 0.38,
+      depthWrite: false,
+    }),
+  );
+  freshSilk.renderOrder = 2;
+  scene.add(freshSilk);
+}
+
+function finishSilkRepair(): void {
+  if (!freshSilk) return;
+  if (freshSilkPoints.length > 2) {
+    fadingSilk.push({ line: freshSilk, age: 0 });
+    rememberAutonomousAct("Spun a fresh safety line across the open web.");
+  } else {
+    scene.remove(freshSilk);
+    freshSilk.geometry.dispose();
+    (freshSilk.material as THREE.Material).dispose();
+  }
+  freshSilk = null;
+  freshSilkPoints = [];
+}
+
+function updateFreshSilk(dt: number): void {
+  if (freshSilk && loadedRig) {
+    loadedRig.rootObject.getWorldPosition(petWorldPosition);
+    const previousPoint = freshSilkPoints[freshSilkPoints.length - 1];
+    if (previousPoint.distanceToSquared(petWorldPosition) > 0.0064 && freshSilkPoints.length < 96) {
+      freshSilkPoints.push(petWorldPosition.clone());
+      freshSilk.geometry.dispose();
+      freshSilk.geometry = new THREE.BufferGeometry().setFromPoints(freshSilkPoints);
+    }
+  }
+
+  for (let index = fadingSilk.length - 1; index >= 0; index -= 1) {
+    const silkMemory = fadingSilk[index];
+    silkMemory.age += dt;
+    const material = silkMemory.line.material as THREE.LineBasicMaterial;
+    material.opacity = THREE.MathUtils.lerp(0.38, 0.08, Math.min(1, silkMemory.age / 45));
+    if (silkMemory.age < 80) continue;
+    scene.remove(silkMemory.line);
+    silkMemory.line.geometry.dispose();
+    material.dispose();
+    fadingSilk.splice(index, 1);
+  }
+}
 
 function saveMemory(): void {
   memory.lastVisit = Date.now();
@@ -275,6 +397,8 @@ function saveMemory(): void {
   }
 }
 
+reconcileTimeAway();
+
 function announce(message: string): void {
   toast.textContent = message;
   toast.classList.add("visible");
@@ -282,6 +406,9 @@ function announce(message: string): void {
 }
 
 function setPetMode(mode: PetMode, note: string, activity: string): void {
+  if (petMode === "repairing" && mode !== "repairing" && freshSilk) {
+    finishSilkRepair();
+  }
   petMode = mode;
   fieldNote = note;
   activityLabel.textContent = activity;
@@ -327,6 +454,7 @@ function updateHud(): void {
   const seconds = Math.floor(habitatTime % 60).toString().padStart(2, "0");
   clock.textContent = `${minutes}:${seconds}`;
   if (feedButton) feedButton.disabled = moth !== null;
+  renderSilkMemory();
 }
 
 function createMoth(): THREE.Group {
@@ -359,23 +487,31 @@ function createMoth(): THREE.Group {
   return group;
 }
 
-function offerMoth(): void {
+function offerMoth(source: "keeper" | "wild" = "keeper"): void {
   if (!choreographer || moth) return;
   const farNode = web.network.nodes.get(web.farNodeId);
   const strandId = farNode ? [...farNode.connectedStrandIds][0] : web.homeStrandId;
   if (!strandId) return;
   mothAddress = { strandId, t: 0.58 };
   moth = createMoth();
+  mothSource = source;
+  if (source === "wild") moth.scale.setScalar(0.72);
   scene.add(moth);
   traversal.getWorldPosition(mothAddress, mothWorldPosition);
   moth.position.copy(mothWorldPosition);
   mothStage = "noticed";
   mothTimer = 0;
   nextMothTremor = 0.15;
-  lastUserAction = habitatTime;
-  setPetMode("listening", `${memory.name} stops. Eight feet read one tiny vibration.`, "prey on the web");
+  if (source === "keeper") lastUserAction = habitatTime;
+  setPetMode(
+    "listening",
+    source === "keeper"
+      ? `${memory.name} stops. Eight feet read one tiny vibration.`
+      : "A wild gnat chose the wrong strand. She noticed before you did.",
+    source === "keeper" ? "prey on the web" : "triangulating wild prey",
+  );
   choreographer.setIntent({ kind: "attend", at: mothWorldPosition });
-  announce("A pantry moth catches in the gumfoot silk");
+  announce(source === "keeper" ? "A pantry moth catches in the gumfoot silk" : "The web caught something on its own");
 }
 
 function removeMoth(): void {
@@ -476,10 +612,10 @@ async function boot(): Promise<void> {
   traversal.getWorldPosition({ strandId: web.homeStrandId, t: 0.5 }, homeWorldPosition);
   setPetMode(
     "watching",
-    memory.visits > 1
+    awayMemory || (memory.visits > 1
       ? `${memory.name} is still. The web says she knows this visitor.`
-      : `${memory.name} tests the air and waits to learn your signal.`,
-    "reading the room",
+      : `${memory.name} tests the air and waits to learn your signal.`),
+    awayMemory ? "remembering the hours alone" : "reading the room",
   );
   memory.bond = Math.min(100, memory.bond + (memory.visits > 1 ? 0.6 : 0));
   saveMemory();
@@ -727,7 +863,7 @@ document.querySelectorAll<HTMLButtonElement>("[data-action]").forEach((button) =
   button.addEventListener("click", () => {
     switch (button.dataset.action) {
       case "feed":
-        offerMoth();
+        offerMoth("keeper");
         break;
       case "signal":
         signalOnWeb();
@@ -818,16 +954,32 @@ function updateMoth(dt: number): void {
   }
 
   if (mothStage === "caught" && mothTimer > 1.4) {
+    const caughtWildPrey = mothSource === "wild";
     removeMoth();
     mothStage = "none";
-    memory.hunger = Math.max(0, memory.hunger - 46);
-    memory.bond = Math.min(100, memory.bond + 7);
-    memory.feedings += 1;
+    memory.hunger = Math.max(0, memory.hunger - (caughtWildPrey ? 24 : 46));
+    if (caughtWildPrey) {
+      rememberAutonomousAct("Caught a wild gnat by reading its tremor through the silk.");
+    } else {
+      memory.bond = Math.min(100, memory.bond + 7);
+      memory.feedings += 1;
+    }
     saveMemory();
     choreographer.setIntent({ kind: "rest" });
-    setPetMode("resting", `${memory.name} eats in the quiet center of her web.`, "sated and cleaning");
+    setPetMode(
+      "grooming",
+      caughtWildPrey
+        ? `${memory.name} cleans one pedipalp. The habitat fed itself.`
+        : `${memory.name} eats in the quiet center of her web.`,
+      "sated and cleaning",
+    );
     activityDeadline = habitatTime + 10 + Math.random() * 8;
-    announce(`${memory.name} accepted your moth · familiarity increased`);
+    nextWildPreyAt = habitatTime + 52 + Math.random() * 70;
+    announce(
+      caughtWildPrey
+        ? `${memory.name} made her own luck`
+        : `${memory.name} accepted your moth · familiarity increased`,
+    );
   }
 }
 
@@ -837,17 +989,32 @@ function updateAutonomy(dt: number): void {
   if (moth) return;
 
   const state = choreographer.state;
-  if ((petMode === "wandering" || petMode === "retreating") && state.arrived) {
+  if ((petMode === "wandering" || petMode === "retreating" || petMode === "repairing") && state.arrived) {
+    const arrivedFromRepair = petMode === "repairing";
+    if (arrivedFromRepair) finishSilkRepair();
     choreographer.setIntent({ kind: "rest" });
     const arrivedFromRetreat = petMode === "retreating";
     setPetMode(
-      arrivedFromRetreat ? "resting" : "watching",
-      arrivedFromRetreat
+      arrivedFromRepair ? "grooming" : arrivedFromRetreat ? "resting" : "watching",
+      arrivedFromRepair
+        ? `${memory.name} tests the new line with one deliberate foot.`
+        : arrivedFromRetreat
         ? `${memory.name} folds herself into the knot she trusts most.`
         : `${memory.name} stops because the web has changed beneath her.`,
-      arrivedFromRetreat ? "safe in her retreat" : "sampling the silk",
+      arrivedFromRepair ? "inspecting fresh silk" : arrivedFromRetreat ? "safe in her retreat" : "sampling the silk",
     );
     activityDeadline = habitatTime + 8 + Math.random() * 12;
+    return;
+  }
+
+  if (
+    habitatTime >= nextWildPreyAt &&
+    memory.hunger >= 55 &&
+    habitatTime - lastUserAction > 16 &&
+    (!state.hasRoute || state.arrived)
+  ) {
+    offerMoth("wild");
+    nextWildPreyAt = habitatTime + 70 + Math.random() * 90;
     return;
   }
 
@@ -860,15 +1027,31 @@ function updateAutonomy(dt: number): void {
   }
 
   const choice = Math.random();
-  if (choice < 0.34) {
+  const instinct = dominantInstinct();
+  const repairChance = instinct === "explore" ? 0.28 : 0.14;
+  const shelterChance = instinct === "shelter" ? 0.48 : 0.2;
+  if (choice < repairChance) {
+    choreographer.setIntent({ kind: "travel", to: { kind: "node", nodeId: web.farNodeId }, urgency: 0.42 });
+    beginSilkRepair();
+    setPetMode("repairing", `${memory.name} pays out a line where the web feels too open.`, "reinforcing the web");
+  } else if (choice < repairChance + 0.3) {
     choreographer.setIntent({ kind: "travel", to: { kind: "node", nodeId: web.farNodeId }, urgency: 0.55 });
     setPetMode("wandering", `${memory.name} begins a patrol no one asked for.`, "checking the far anchors");
-  } else if (choice < 0.57) {
+    rememberAutonomousAct("Patrolled the far anchors without being asked.");
+  } else if (choice < repairChance + 0.3 + shelterChance) {
     choreographer.setIntent({ kind: "retreat", to: { kind: "node", nodeId: web.retreatNodeId } });
     setPetMode("retreating", `${memory.name} decides the open web has seen enough of her.`, "returning to shadow");
-  } else if (choice < 0.78) {
+    rememberAutonomousAct("Chose the retreat when the room felt too exposed.");
+  } else if (instinct === "groom" || choice < 0.9) {
     choreographer.setIntent({ kind: "freeze" });
-    setPetMode("listening", `${memory.name} stills every joint. Something moved beyond the glass.`, "listening through silk");
+    setPetMode(
+      instinct === "groom" ? "grooming" : "listening",
+      instinct === "groom"
+        ? `${memory.name} draws each leg through her chelicerae, one by one.`
+        : `${memory.name} stills every joint. Something moved beyond the glass.`,
+      instinct === "groom" ? "grooming all eight legs" : "listening through silk",
+    );
+    rememberAutonomousAct(instinct === "groom" ? "Stopped to groom all eight legs." : "Stilled herself to read the room through silk.");
   } else {
     choreographer.setIntent({ kind: "rest" });
     setPetMode("resting", `${memory.name} does nothing at all, with great intention.`, "breathing beneath the web");
@@ -919,6 +1102,7 @@ function frame(now: number): void {
 
   updateMoth(delta);
   updateAutonomy(delta);
+  updateFreshSilk(delta);
   if (toastTimer > 0) {
     toastTimer -= delta;
     if (toastTimer <= 0) toast.classList.remove("visible");

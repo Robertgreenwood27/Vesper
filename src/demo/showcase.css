@@ -324,6 +324,26 @@ a:focus-visible {
   font: italic 400 13px/1.5 "Cormorant Garamond", serif;
 }
 
+.instinct-readout {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 17px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(238, 232, 220, 0.08);
+  color: #4e4d48;
+  font: 400 7px/1 "DM Mono", monospace;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+}
+
+.instinct-readout strong {
+  color: #a8a49b;
+  font-weight: 400;
+  letter-spacing: 0.08em;
+  transition: color 0.3s ease;
+}
+
 .observation {
   position: absolute;
   top: 50%;
@@ -352,6 +372,40 @@ a:focus-visible {
   color: #96928a;
   font: italic 400 18px/1.35 "Cormorant Garamond", serif;
   transition: opacity 0.25s ease;
+}
+
+.silk-memory {
+  margin-top: 28px;
+}
+
+.silk-memory > p {
+  margin-bottom: 12px;
+}
+
+.silk-memory ol {
+  display: grid;
+  gap: 9px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.silk-memory li {
+  position: relative;
+  padding-left: 14px;
+  color: #64615b;
+  font: 400 7px/1.5 "DM Mono", monospace;
+  letter-spacing: 0.04em;
+}
+
+.silk-memory li::before {
+  position: absolute;
+  top: 0.55em;
+  left: 0;
+  width: 5px;
+  height: 1px;
+  background: rgba(237, 52, 70, 0.6);
+  content: "";
 }
 
 .care-tray {
@@ -562,7 +616,7 @@ a:focus-visible {
   .pet-card { top: 104px; left: 22px; width: 275px; transform: none; }
   .pet-card h1 { font-size: 58px; }
   .mood-line { margin-top: 22px; }
-  .vitals, .memory, .species { display: none; }
+  .vitals, .memory, .species, .instinct-readout { display: none; }
   .care-tray { right: 14px; bottom: 14px; left: 14px; display: grid; grid-template-columns: repeat(3, 1fr) 44px 44px; }
   .care-action { min-width: 0; justify-content: center; padding: 11px 9px; }
   .care-action small { display: none; }
