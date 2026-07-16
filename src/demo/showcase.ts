@@ -27,15 +27,20 @@ const instinctLabel = document.getElementById("instinct-label") as HTMLElement;
 const autonomyCount = document.getElementById("autonomy-count") as HTMLElement;
 const autonomyLog = document.getElementById("autonomy-log") as HTMLOListElement;
 const feedButton = document.querySelector<HTMLButtonElement>("[data-action='feed']");
+const followButton = document.querySelector<HTMLButtonElement>("[data-action='follow']");
+
+const mobileExperience =
+  window.matchMedia("(max-width: 820px), (pointer: coarse)").matches ||
+  Math.min(window.innerWidth, window.innerHeight) <= 560;
 
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, mobileExperience ? 1.35 : 2));
 renderer.setClearColor(0x050504, 1);
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 0.88;
 renderer.shadowMap.enabled = true;
-renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.shadowMap.type = mobileExperience ? THREE.BasicShadowMap : THREE.PCFSoftShadowMap;
 
 const scene = new THREE.Scene();
 scene.fog = new THREE.FogExp2(0x050504, 0.013);
@@ -57,7 +62,7 @@ const ambient = new THREE.AmbientLight(0x2a3040, 0.43);
 scene.add(ambient);
 const key = new THREE.DirectionalLight(0xbfd4ff, 2.2);
 key.position.set(3, 6, 2);
-key.castShadow = true;
+key.castShadow = !mobileExperience;
 scene.add(key);
 const rim = new THREE.DirectionalLight(0xff7a5c, 1.4);
 rim.position.set(-4, 1.5, -3.5);
@@ -118,7 +123,7 @@ function buildRoom(): void {
   crate.receiveShadow = true;
   scene.add(crate);
 
-  const dustCount = 460;
+  const dustCount = mobileExperience ? 220 : 460;
   const positions = new Float32Array(dustCount * 3);
   for (let i = 0; i < dustCount; i += 1) {
     positions[i * 3] = THREE.MathUtils.randFloatSpread(25);
@@ -268,7 +273,7 @@ let fieldNote = "The web is settling before she arrives.";
 let activityDeadline = 7;
 let habitatTime = 0;
 let lastUserAction = -30;
-let followSpider = false;
+let followSpider = mobileExperience;
 let redWatch = false;
 let toastTimer = 0;
 let hudTimer = 0;
@@ -286,6 +291,13 @@ const petWorldPosition = new THREE.Vector3();
 const mothWorldPosition = new THREE.Vector3();
 const homeWorldPosition = new THREE.Vector3();
 let awayMemory = "";
+
+controls.enabled = !followSpider;
+followButton?.setAttribute("aria-pressed", String(followSpider));
+
+function hapticPulse(duration = 9): void {
+  if (mobileExperience && typeof navigator.vibrate === "function") navigator.vibrate(duration);
+}
 
 function rememberAutonomousAct(note: string): void {
   memory.autonomousActs += 1;
@@ -790,14 +802,20 @@ function pickSilk(event: PointerEvent): THREE.Vector3 | null {
   return best;
 }
 
-canvas.addEventListener("pointerdown", (event) => {
-  if (event.button !== 0 || !choreographer) {
-    return;
-  }
+interface TapCandidate {
+  pointerId: number;
+  x: number;
+  y: number;
+  startedAt: number;
+  moved: boolean;
+}
+
+let tapCandidate: TapCandidate | null = null;
+
+function suggestDestination(event: PointerEvent): void {
+  if (!choreographer) return;
   const target = pickSilk(event);
-  if (!target) {
-    return;
-  }
+  if (!target) return;
   choreographer.setIntent({
     kind: "travel",
     to: { kind: "world", position: target, maximumSnapDistance: 0.5 },
@@ -810,6 +828,36 @@ canvas.addEventListener("pointerdown", (event) => {
   reticle.style.display = "block";
   reticle.getAnimations().forEach((animation) => animation.cancel());
   requestAnimationFrame(() => reticle.getAnimations().forEach((animation) => animation.play()));
+  hapticPulse(7);
+}
+
+canvas.addEventListener("pointerdown", (event) => {
+  if (event.button !== 0 || !choreographer) return;
+  tapCandidate = {
+    pointerId: event.pointerId,
+    x: event.clientX,
+    y: event.clientY,
+    startedAt: performance.now(),
+    moved: false,
+  };
+});
+
+canvas.addEventListener("pointermove", (event) => {
+  if (!tapCandidate || tapCandidate.pointerId !== event.pointerId) return;
+  const distance = Math.hypot(event.clientX - tapCandidate.x, event.clientY - tapCandidate.y);
+  if (distance > 11) tapCandidate.moved = true;
+});
+
+canvas.addEventListener("pointerup", (event) => {
+  if (!tapCandidate || tapCandidate.pointerId !== event.pointerId) return;
+  const candidate = tapCandidate;
+  tapCandidate = null;
+  if (candidate.moved || performance.now() - candidate.startedAt > 450) return;
+  suggestDestination(event);
+});
+
+canvas.addEventListener("pointercancel", () => {
+  tapCandidate = null;
 });
 
 function retreat(): void {
@@ -861,6 +909,7 @@ function renamePet(): void {
 
 document.querySelectorAll<HTMLButtonElement>("[data-action]").forEach((button) => {
   button.addEventListener("click", () => {
+    hapticPulse();
     switch (button.dataset.action) {
       case "feed":
         offerMoth("keeper");
@@ -1131,6 +1180,20 @@ requestAnimationFrame(frame);
 
 updateHud();
 window.addEventListener("beforeunload", saveMemory);
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) {
+    saveMemory();
+    return;
+  }
+  previous = performance.now();
+  accumulator = 0;
+});
+
+if ("serviceWorker" in navigator && import.meta.env.PROD) {
+  window.addEventListener("load", () => {
+    void navigator.serviceWorker.register("/sw.js").catch(() => undefined);
+  });
+}
 
 boot().catch((error: unknown) => {
   setStatus(error instanceof Error ? error.message : String(error));

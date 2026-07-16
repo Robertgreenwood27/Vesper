@@ -1,0 +1,32 @@
+{
+  "name": "Vesper · Autonomous Black Widow",
+  "short_name": "Vesper",
+  "description": "An autonomous pet black widow living in a responsive web.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#050504",
+  "theme_color": "#050504",
+  "orientation": "any",
+  "categories": ["entertainment", "games"],
+  "icons": [
+    {
+      "src": "/icons/vesper-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/vesper-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/vesper-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}

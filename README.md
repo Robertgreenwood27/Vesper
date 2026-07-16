@@ -16,6 +16,23 @@ npm run dev
 
 Open `http://localhost:5173`.
 
+## Put Vesper on your phone
+
+The habitat is phone-first, safe-area aware, and installable as a standalone
+web app. On iPhone, open the deployed site in Safari and choose **Share → Add to
+Home Screen**. On Android, use **Install app** from the browser menu.
+
+The included `vercel.json` makes the repository ready for a standard Vercel
+import: build with `npm run build` and publish `dist`. The service worker keeps
+previously visited habitat assets available when the connection gets spotty.
+
+Phone controls:
+
+- Tap silk to suggest a destination without interrupting camera drags.
+- Use the eye button to release or re-enable the close-follow camera.
+- Drag to orbit and pinch to zoom while the camera is released.
+- All five care and observation controls remain available in the bottom dock.
+
 ## Interactions
 
 - Click a strand to suggest a destination.

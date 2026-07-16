@@ -24,10 +24,19 @@ body,
   margin: 0;
 }
 
+@supports (height: 100dvh) {
+  html,
+  body,
+  #habitat {
+    height: 100dvh;
+  }
+}
+
 html,
 body {
   min-width: 320px;
   overflow: hidden;
+  overscroll-behavior: none;
   background: #050504;
 }
 
@@ -38,6 +47,7 @@ a {
 
 button {
   font: inherit;
+  touch-action: manipulation;
 }
 
 button:focus-visible,
@@ -612,26 +622,141 @@ a:focus-visible {
 }
 
 @media (max-width: 820px) {
-  .masthead { top: 20px; right: 20px; left: 20px; }
-  .pet-card { top: 104px; left: 22px; width: 275px; transform: none; }
+  .masthead {
+    top: max(18px, env(safe-area-inset-top));
+    right: max(18px, env(safe-area-inset-right));
+    left: max(18px, env(safe-area-inset-left));
+  }
+  .pet-card { top: calc(max(18px, env(safe-area-inset-top)) + 82px); left: max(22px, env(safe-area-inset-left)); width: 275px; transform: none; }
   .pet-card h1 { font-size: 58px; }
   .mood-line { margin-top: 22px; }
-  .vitals, .memory, .species, .instinct-readout { display: none; }
-  .care-tray { right: 14px; bottom: 14px; left: 14px; display: grid; grid-template-columns: repeat(3, 1fr) 44px 44px; }
-  .care-action { min-width: 0; justify-content: center; padding: 11px 9px; }
+  .vitals, .memory, .species { display: none; }
+  .instinct-readout { margin-top: 13px; padding-top: 10px; }
+  .observation {
+    top: auto;
+    right: max(14px, env(safe-area-inset-right));
+    bottom: calc(82px + max(14px, env(safe-area-inset-bottom)));
+    left: max(14px, env(safe-area-inset-left));
+    display: block;
+    width: auto;
+    transform: none;
+  }
+  .observation > p,
+  .silk-memory { display: none; }
+  .observation blockquote {
+    min-height: 0;
+    margin: 0 auto;
+    padding: 11px 14px;
+    overflow: hidden;
+    border: 1px solid rgba(238, 232, 220, 0.1);
+    background: linear-gradient(100deg, rgba(7, 7, 6, 0.86), rgba(13, 7, 8, 0.72));
+    box-shadow: 0 12px 35px rgba(0, 0, 0, 0.3);
+    font-size: 15px;
+    line-height: 1.25;
+    text-align: center;
+    backdrop-filter: blur(18px);
+  }
+  .care-tray {
+    right: max(12px, env(safe-area-inset-right));
+    bottom: max(12px, env(safe-area-inset-bottom));
+    left: max(12px, env(safe-area-inset-left));
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr)) 48px 48px;
+    gap: 6px;
+  }
+  .care-action,
+  .round-action { min-width: 0; min-height: 54px; justify-content: center; padding: 10px 7px; }
   .care-action small { display: none; }
-  .instruction { bottom: 86px; left: 22px; }
+  .round-action { width: auto; }
+  .instruction {
+    top: calc(max(18px, env(safe-area-inset-top)) + 245px);
+    bottom: auto;
+    left: max(22px, env(safe-area-inset-left));
+    font-size: 0;
+  }
+  .instruction::after {
+    color: #5d5b55;
+    content: "tap silk to guide · eye releases camera";
+    font: 400 6px/1 "DM Mono", monospace;
+    letter-spacing: 0.11em;
+  }
+  .toast { top: max(18px, env(safe-area-inset-top)); }
 }
 
 @media (max-width: 560px) {
   .brand small, .live-indicator { display: none; }
-  .pet-card { top: 78px; left: 18px; }
-  .pet-card h1 { font-size: 49px; }
-  .mood-line { width: calc(100vw - 36px); margin-top: 16px; }
-  .mood-detail { max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .care-tray { grid-template-columns: repeat(3, 1fr); }
-  .round-action { display: none; }
+  .pet-card {
+    top: calc(max(18px, env(safe-area-inset-top)) + 56px);
+    right: max(16px, env(safe-area-inset-right));
+    left: max(16px, env(safe-area-inset-left));
+    width: auto;
+  }
+  .pet-card h1 { font-size: clamp(43px, 13vw, 52px); }
+  .name-row { margin-top: 7px; }
+  .mood-line { width: 100%; margin-top: 15px; padding: 11px 0; }
+  .mood-detail { max-width: 48vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .instinct-readout { width: 100%; }
+  .care-action strong { font-size: 8px; white-space: nowrap; }
   .action-icon { display: none; }
+  .instruction { top: calc(max(18px, env(safe-area-inset-top)) + 227px); }
+  .observation blockquote {
+    display: -webkit-box;
+    padding: 10px 12px;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+  }
+}
+
+@media (max-height: 560px) and (orientation: landscape) {
+  .masthead { top: max(10px, env(safe-area-inset-top)); }
+  .pet-card {
+    top: calc(max(10px, env(safe-area-inset-top)) + 45px);
+    right: auto;
+    left: max(16px, env(safe-area-inset-left));
+    width: 245px;
+    transform: none;
+  }
+  .kicker { display: none; }
+  .species,
+  .vitals,
+  .memory { display: none; }
+  .pet-card h1 { font-size: 43px; }
+  .mood-line { margin-top: 10px; }
+  .instinct-readout { margin-top: 8px; padding-top: 8px; }
+  .observation {
+    top: calc(max(10px, env(safe-area-inset-top)) + 55px);
+    right: max(16px, env(safe-area-inset-right));
+    bottom: auto;
+    left: auto;
+    display: block;
+    width: min(36vw, 285px);
+    transform: none;
+  }
+  .observation > p,
+  .silk-memory { display: none; }
+  .observation blockquote {
+    min-height: 0;
+    margin: 0;
+    padding: 11px 13px;
+    border: 1px solid rgba(238, 232, 220, 0.1);
+    background: rgba(7, 7, 6, 0.78);
+    font-size: 13px;
+    text-align: left;
+    backdrop-filter: blur(16px);
+  }
+  .care-tray {
+    right: max(12px, env(safe-area-inset-right));
+    bottom: max(10px, env(safe-area-inset-bottom));
+    left: auto;
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr)) 48px 48px;
+    gap: 6px;
+    width: min(66vw, 610px);
+  }
+  .care-action,
+  .round-action { min-width: 0; min-height: 52px; justify-content: center; padding: 9px 8px; }
+  .round-action { width: auto; }
+  .care-action small { display: none; }
   .instruction { display: none; }
 }
 

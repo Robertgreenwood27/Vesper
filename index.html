@@ -2,12 +2,19 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="theme-color" content="#050504" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Vesper" />
     <meta
       name="description"
       content="Vesper — an autonomous black widow who lives in her own responsive web."
     />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="apple-touch-icon" href="/icons/vesper-180.png" />
+    <link rel="icon" href="/icons/vesper-192.png" />
     <title>Vesper · Autonomous Black Widow</title>
   </head>
   <body>
@@ -84,7 +91,7 @@
         </button>
         <button class="care-action" data-action="signal">
           <span class="action-icon signal-icon" aria-hidden="true"><i></i></span>
-          <span><strong>Touch the web</strong><small>let her feel you</small></span>
+          <span><strong>Touch web</strong><small>let her feel you</small></span>
         </button>
         <button class="care-action" data-action="retreat">
           <span class="action-icon home-icon" aria-hidden="true"><i></i></span>
