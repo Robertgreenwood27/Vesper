@@ -147,6 +147,12 @@ export class SpiderChoreographer {
   private readonly contactDir = new THREE.Vector3();
   private readonly bodyRight = new THREE.Vector3();
   private readonly desiredForward = new THREE.Vector3(1, 0, 0);
+  private readonly desiredUp = new THREE.Vector3(0, 1, 0);
+  private readonly desiredRight = new THREE.Vector3(0, 0, 1);
+  private readonly currentFrameMatrix = new THREE.Matrix4();
+  private readonly desiredFrameMatrix = new THREE.Matrix4();
+  private readonly currentFrameOrientation = new THREE.Quaternion();
+  private readonly desiredFrameOrientation = new THREE.Quaternion();
 
   private readonly supportSamples: SpiderSupportSample[] = [];
   private readonly occupied: StrandAddress[] = [];
@@ -524,7 +530,14 @@ export class SpiderChoreographer {
       this.initializeCinematicFeet();
     }
 
+    // Cinematic travel still needs a real walking surface. Refresh the semantic
+    // contacts before moving the body so their transported normals and support
+    // geometry can turn her onto steep silk instead of leaving dorsal as world-up.
+    this.refreshContacts();
+    this.updateSupportFrame();
     this.updateCinematicBody(dt);
+    // The body has moved since the first refresh. Resolve reach and strand frames
+    // again before choosing the next cinematic step and distributing its load.
     this.refreshContacts();
     this.updateCinematicFeet(dt);
     this.loads.applyFixedStep(dt, this.bodyPosition);
@@ -535,22 +548,19 @@ export class SpiderChoreographer {
     const frame = this.bodyPose.frame;
     if (!frame.valid) return;
 
-    if (this.route.hasRoute && this.route.positionAt(this.traversal, 0, this.travelPoint)) {
+    const hasTravelPoint =
+      this.route.hasRoute && this.route.positionAt(this.traversal, 0, this.travelPoint);
+    if (this.route.hasRoute && this.route.positionAt(this.traversal, 0.28, this.aheadPoint)) {
+      this.scratch.copy(this.aheadPoint).sub(this.travelPoint);
+      if (this.scratch.lengthSq() > 1e-7) this.desiredForward.copy(this.scratch);
+    }
+
+    this.alignBodyFrame(frame.up, dt);
+
+    if (hasTravelPoint) {
       this.target.copy(this.travelPoint).addScaledVector(this.bodyUp, this.config.bodyStandoff);
       const follow = 1 - Math.exp(-dt * 11);
       this.bodyPosition.lerp(this.target, follow);
-    }
-
-    if (this.route.hasRoute && this.route.positionAt(this.traversal, 0.28, this.aheadPoint)) {
-      this.scratch.copy(this.aheadPoint).sub(this.travelPoint);
-      if (this.scratch.lengthSq() > 1e-7) this.desiredForward.copy(this.scratch).normalize();
-    }
-
-    const turn = 1 - Math.exp(-dt * this.config.bodyTurnRate);
-    this.bodyForward.lerp(this.desiredForward, turn).normalize();
-    this.scratch.crossVectors(this.bodyForward, this.bodyUp);
-    if (this.scratch.lengthSq() > 1e-8) {
-      this.bodyForward.crossVectors(this.bodyUp, this.scratch.normalize()).normalize();
     }
 
     this.scratch.copy(this.bodyPosition).sub(this.previousPosition).divideScalar(Math.max(dt, 1e-4));
@@ -712,14 +722,7 @@ export class SpiderChoreographer {
       this.desiredForward.copy(frame.forward);
     }
 
-    const turn = dt > 0 ? Math.min(1, dt * this.config.bodyTurnRate) : 1;
-    this.bodyForward.lerp(this.desiredForward, turn).normalize();
-    this.bodyUp.lerp(frame.up, turn).normalize();
-    // Keep forward honest after both have been eased independently.
-    this.scratch.crossVectors(this.bodyForward, this.bodyUp);
-    if (this.scratch.lengthSq() > 1e-8) {
-      this.bodyForward.crossVectors(this.bodyUp, this.scratch.normalize()).normalize();
-    }
+    this.alignBodyFrame(frame.up, dt);
 
     // Real body velocity drives the lean and the abdomen lag.
     if (dt > 0) {
@@ -743,6 +746,79 @@ export class SpiderChoreographer {
 
     this.swayAbdomen(forwardSpeed);
     this.rig.rootObject.updateMatrixWorld(true);
+  }
+
+  /**
+   * Advances the complete body frame toward the route tangent and the dorsal
+   * side of the current support surface.
+   *
+   * Treating forward and up as unrelated lerps works on a floor, but not on a
+   * climb: forward can acquire a normal component, roll lags behind pitch, and
+   * an equivalent contact normal can flip the spider over. Building two proper
+   * frames and slerping them keeps all three axes orthogonal through the turn.
+   */
+  private alignBodyFrame(supportUp: Vec3Like, dt: number): void {
+    this.desiredUp.set(supportUp.x, supportUp.y, supportUp.z);
+    if (this.desiredUp.lengthSq() <= 1e-8) {
+      this.desiredUp.copy(this.bodyUp);
+    } else {
+      this.desiredUp.normalize();
+    }
+
+    // A surface normal has two valid signs. Stay on the side of the silk she is
+    // already occupying instead of taking the numerically equivalent upside-down
+    // frame at a junction.
+    if (this.desiredUp.dot(this.bodyUp) < 0) this.desiredUp.negate();
+
+    // Anterior follows travel, but travel must be tangent to the support plane.
+    this.desiredForward.addScaledVector(
+      this.desiredUp,
+      -this.desiredForward.dot(this.desiredUp),
+    );
+    if (this.desiredForward.lengthSq() <= 1e-8) {
+      this.desiredForward
+        .copy(this.bodyForward)
+        .addScaledVector(this.desiredUp, -this.bodyForward.dot(this.desiredUp));
+    }
+    if (this.desiredForward.lengthSq() <= 1e-8) {
+      const frameForward = this.bodyPose.frame.forward;
+      this.desiredForward
+        .set(frameForward.x, frameForward.y, frameForward.z)
+        .addScaledVector(this.desiredUp, -this.desiredForward.dot(this.desiredUp));
+    }
+    if (this.desiredForward.lengthSq() <= 1e-8) {
+      // This should only be reachable for corrupt/degenerate support data. Keep
+      // the last valid complete orientation instead of snapping to a world axis.
+      return;
+    }
+    this.desiredForward.normalize();
+    this.desiredRight.crossVectors(this.desiredForward, this.desiredUp).normalize();
+    this.desiredUp.crossVectors(this.desiredRight, this.desiredForward).normalize();
+
+    // Re-orthonormalize the held frame before turning it into a quaternion.
+    this.bodyRight.crossVectors(this.bodyForward, this.bodyUp);
+    if (this.bodyRight.lengthSq() <= 1e-8) return;
+    this.bodyRight.normalize();
+    this.bodyUp.crossVectors(this.bodyRight, this.bodyForward).normalize();
+    this.bodyForward.crossVectors(this.bodyUp, this.bodyRight).normalize();
+
+    this.currentFrameMatrix.makeBasis(
+      this.bodyRight,
+      this.bodyUp,
+      this.scratch.copy(this.bodyForward).negate(),
+    );
+    this.desiredFrameMatrix.makeBasis(
+      this.desiredRight,
+      this.desiredUp,
+      this.scratch.copy(this.desiredForward).negate(),
+    );
+    this.currentFrameOrientation.setFromRotationMatrix(this.currentFrameMatrix);
+    this.desiredFrameOrientation.setFromRotationMatrix(this.desiredFrameMatrix);
+
+    const turn = dt > 0 ? 1 - Math.exp(-dt * this.config.bodyTurnRate) : 1;
+    this.currentFrameOrientation.slerp(this.desiredFrameOrientation, turn).normalize();
+    this.bodyForward.set(0, 0, -1).applyQuaternion(this.currentFrameOrientation).normalize();
+    this.bodyUp.set(0, 1, 0).applyQuaternion(this.currentFrameOrientation).normalize();
   }
 
   /**
