@@ -26,7 +26,26 @@
         <span class="vignette"></span>
       </div>
 
-      <header class="masthead">
+      <nav class="panel-tabs" aria-label="Habitat panels">
+        <button
+          class="panel-tab"
+          data-panel-toggle="status"
+          aria-controls="identity-panel pet-card observation-panel habitat-instruction"
+          aria-expanded="true"
+        >
+          <i aria-hidden="true"></i><span>Info</span>
+        </button>
+        <button
+          class="panel-tab"
+          data-panel-toggle="care"
+          aria-controls="care-panel"
+          aria-expanded="true"
+        >
+          <i aria-hidden="true"></i><span>Care</span>
+        </button>
+      </nav>
+
+      <header class="masthead" id="identity-panel">
         <a class="brand" href="#pet-card" aria-label="Skip to Vesper's status">
           <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
           <span>
@@ -38,7 +57,6 @@
       </header>
 
       <section class="pet-card" id="pet-card" aria-label="Pet status">
-        <p class="kicker">your wife-approved widow</p>
         <div class="name-row">
           <h1 id="pet-name">VESPER</h1>
           <button class="text-button" data-action="rename" aria-label="Rename your black widow">
@@ -72,7 +90,7 @@
         </div>
       </section>
 
-      <aside class="observation" aria-live="polite">
+      <aside class="observation" id="observation-panel" aria-live="polite">
         <p>FIELD NOTE <span id="clock">00:00</span></p>
         <blockquote id="status">The web is settling before she arrives.</blockquote>
         <div class="silk-memory">
@@ -84,7 +102,7 @@
       <div class="reticle" id="reticle" aria-hidden="true"><i></i></div>
       <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
-      <nav class="care-tray" aria-label="Care and interaction controls">
+      <nav class="care-tray" id="care-panel" aria-label="Care and interaction controls">
         <button class="care-action primary" data-action="feed">
           <span class="action-icon moth-icon" aria-hidden="true"><i></i></span>
           <span><strong>Offer moth</strong><small>place prey on her silk</small></span>
@@ -105,7 +123,7 @@
         </button>
       </nav>
 
-      <p class="instruction"><span>click any strand</span> and she will decide how to get there</p>
+      <p class="instruction" id="habitat-instruction"><span>click any strand</span> and she will decide how to get there</p>
     </main>
 
     <script type="module" src="/src/demo/showcase.ts"></script>

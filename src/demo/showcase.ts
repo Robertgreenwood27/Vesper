@@ -28,6 +28,7 @@ const autonomyCount = document.getElementById("autonomy-count") as HTMLElement;
 const autonomyLog = document.getElementById("autonomy-log") as HTMLOListElement;
 const feedButton = document.querySelector<HTMLButtonElement>("[data-action='feed']");
 const followButton = document.querySelector<HTMLButtonElement>("[data-action='follow']");
+const panelToggles = document.querySelectorAll<HTMLButtonElement>("[data-panel-toggle]");
 
 const mobileExperience =
   window.matchMedia("(max-width: 820px), (pointer: coarse)").matches ||
@@ -303,6 +304,54 @@ followButton?.setAttribute("aria-pressed", String(followSpider));
 function hapticPulse(duration = 9): void {
   if (mobileExperience && typeof navigator.vibrate === "function") navigator.vibrate(duration);
 }
+
+type HabitatPanel = "status" | "care";
+
+interface PanelVisibility {
+  status: boolean;
+  care: boolean;
+}
+
+const PANEL_MEMORY_KEY = "pet-black-widow:panels:v1";
+
+function readPanelVisibility(): PanelVisibility {
+  const fallback = { status: !mobileExperience, care: !mobileExperience };
+  try {
+    const saved = JSON.parse(localStorage.getItem(PANEL_MEMORY_KEY) ?? "null") as Partial<PanelVisibility> | null;
+    return saved
+      ? { status: saved.status ?? fallback.status, care: saved.care ?? fallback.care }
+      : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+const panelVisibility = readPanelVisibility();
+
+function setPanelVisibility(panel: HabitatPanel, expanded: boolean): void {
+  panelVisibility[panel] = expanded;
+  habitat.classList.toggle(`${panel}-collapsed`, !expanded);
+  const button = document.querySelector<HTMLButtonElement>(`[data-panel-toggle='${panel}']`);
+  button?.setAttribute("aria-expanded", String(expanded));
+  button?.setAttribute("aria-label", `${expanded ? "Hide" : "Show"} ${panel} panel`);
+  try {
+    localStorage.setItem(PANEL_MEMORY_KEY, JSON.stringify(panelVisibility));
+  } catch {
+    // The panels still work when storage is unavailable.
+  }
+}
+
+setPanelVisibility("status", panelVisibility.status);
+setPanelVisibility("care", panelVisibility.care);
+habitat.classList.add("panels-ready");
+
+panelToggles.forEach((button) => {
+  button.addEventListener("click", () => {
+    const panel = button.dataset.panelToggle as HabitatPanel;
+    setPanelVisibility(panel, !panelVisibility[panel]);
+    hapticPulse(7);
+  });
+});
 
 function rememberAutonomousAct(note: string): void {
   memory.autonomousActs += 1;

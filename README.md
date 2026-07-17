@@ -31,7 +31,8 @@ Phone controls:
 - Drag to orbit and spin the habitat immediately; pinch to zoom.
 - Tap silk to suggest a destination without interrupting camera gestures.
 - Use the eye button whenever you want the camera to follow Vesper automatically.
-- All five care and observation controls remain available in the bottom dock.
+- Open the **Info** and **Care** tabs only when you need them. Their state is
+  remembered, and closing both leaves an unobstructed habitat view.
 
 ## Interactions
 
