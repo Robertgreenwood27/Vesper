@@ -28,9 +28,9 @@ previously visited habitat assets available when the connection gets spotty.
 
 Phone controls:
 
-- Tap silk to suggest a destination without interrupting camera drags.
-- Use the eye button to release or re-enable the close-follow camera.
-- Drag to orbit and pinch to zoom while the camera is released.
+- Drag to orbit and spin the habitat immediately; pinch to zoom.
+- Tap silk to suggest a destination without interrupting camera gestures.
+- Use the eye button whenever you want the camera to follow Vesper automatically.
 - All five care and observation controls remain available in the bottom dock.
 
 ## Interactions

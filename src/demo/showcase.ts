@@ -52,6 +52,11 @@ const controls = new OrbitControls(camera, canvas);
 controls.target.set(-2, 7, -2);
 controls.enableDamping = true;
 controls.dampingFactor = 0.06;
+controls.rotateSpeed = mobileExperience ? 0.62 : 1;
+controls.zoomSpeed = mobileExperience ? 0.82 : 1;
+controls.screenSpacePanning = true;
+controls.touches.ONE = THREE.TOUCH.ROTATE;
+controls.touches.TWO = THREE.TOUCH.DOLLY_PAN;
 controls.minDistance = 0.8;
 controls.maxDistance = 70;
 
@@ -273,7 +278,7 @@ let fieldNote = "The web is settling before she arrives.";
 let activityDeadline = 7;
 let habitatTime = 0;
 let lastUserAction = -30;
-let followSpider = mobileExperience;
+let followSpider = false;
 let redWatch = false;
 let toastTimer = 0;
 let hudTimer = 0;
@@ -594,6 +599,15 @@ function settleSpider(): boolean {
     return false;
   }
   controls.target.copy(silkPoint);
+  if (mobileExperience) {
+    const portrait = window.innerHeight >= window.innerWidth;
+    const initialOffset = portrait
+      ? new THREE.Vector3(3, 1.35, 3.25)
+      : new THREE.Vector3(3.7, 1.55, 3.8);
+    camera.position.copy(silkPoint).add(initialOffset);
+    camera.lookAt(silkPoint);
+    controls.update();
+  }
   return true;
 }
 
@@ -882,7 +896,7 @@ function toggleFollow(button: HTMLButtonElement): void {
   followSpider = !followSpider;
   button.setAttribute("aria-pressed", String(followSpider));
   controls.enabled = !followSpider;
-  announce(followSpider ? `Keeping ${memory.name} in view` : "Camera released");
+  announce(followSpider ? `Keeping ${memory.name} in view` : "Camera free · drag to orbit");
 }
 
 function toggleLights(button: HTMLButtonElement): void {

@@ -676,7 +676,7 @@ a:focus-visible {
   }
   .instruction::after {
     color: #5d5b55;
-    content: "tap silk to guide · eye releases camera";
+    content: "drag to spin · pinch to zoom · tap silk";
     font: 400 6px/1 "DM Mono", monospace;
     letter-spacing: 0.11em;
   }
