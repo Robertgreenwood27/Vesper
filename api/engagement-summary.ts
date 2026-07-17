@@ -4,7 +4,7 @@ import {
   ENGAGEMENT_EVENT_SET,
   type EngagementCounts,
   type EngagementEvent,
-} from "../src/analytics/engagementEvents";
+} from "../src/analytics/engagementEvents.js";
 
 interface DailyAggregate {
   readonly version: 1;
@@ -132,4 +132,3 @@ export default {
     });
   },
 };
-

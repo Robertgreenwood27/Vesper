@@ -4,7 +4,7 @@ import {
   ENGAGEMENT_EVENT_SET,
   type EngagementCounts,
   type EngagementEvent,
-} from "../src/analytics/engagementEvents";
+} from "../src/analytics/engagementEvents.js";
 
 const MAX_BODY_BYTES = 2_048;
 const MAX_EVENTS_PER_BATCH = 16;
@@ -140,4 +140,3 @@ export default {
     return json({ accepted: true, stored: true }, 202);
   },
 };
-
