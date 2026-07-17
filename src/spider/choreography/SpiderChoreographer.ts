@@ -209,13 +209,16 @@ export class SpiderChoreographer {
     // whole hemisphere to swing the leg fore, aft, up, down, and out, and it is
     // the joint that absorbs whatever rotation the rest of the chain refuses.
     // Every joint past it is treated as a hinge — but a hinge is enforced by
-    // what it *forbids*, not what it allows: flex/extend about the bend axis
-    // stays completely free (the authored bend ranges are relative to the bind
-    // pose, which a working stance is nowhere near — clamping bend is what used
-    // to rip feet off their silk), while sideways swing and twist are held to
-    // the spec's tight ranges widened by `jointLimitScale`, so a mid-leg
-    // segment cannot splay sideways or corkscrew. The solver re-solves after
-    // clamping, letting the free axes absorb the correction.
+    // what it *forbids*, not what it allows: sideways swing and twist are held
+    // to the spec's tight ranges, while flex/extend about the bend axis stays
+    // free. Clamping bend is what tears the mesh: the authored bend ranges are
+    // wide enough (tibia -60°..+20°, ×scale) that adjacent joints can legally
+    // fold against each other into a zig-zag, and the CCD contact-recovery pass
+    // drives them onto exactly those boundaries — every euler angle reads
+    // "within limits" while segment directions reverse by 90-135° and the
+    // skinned joints visibly dislocate. FABRIK's preferred-pose bias already
+    // keeps bend in the natural range; the clamps only need to stop splay and
+    // corkscrew, which swing and twist do.
     const scale = this.config.jointLimitScale;
     this.ik = new SpiderIKSolver(
       SPIDER_LEG_IDS.map((id) => ({
@@ -617,8 +620,27 @@ export class SpiderChoreographer {
         }
       }
       // The procedural target is already continuous; bypass the extra contact
-      // filter so each leg follows the authored arc precisely.
-      this.ik.solve(legId, state.position);
+      // filter so each leg follows the authored arc precisely — but never feed
+      // the solver a point outside the leg's radial workspace. Past maximum
+      // reach the solver stretches into a fold to chase the point; *inside*
+      // minimum reach it must fold the chain double to shorten it, which is
+      // where the front legs used to dislocate as footholds passed beneath
+      // the body. (solveLeg applies the same clamp for the lab path.)
+      const leg = this.rig.legs[legId];
+      leg.chain[0].getWorldPosition(this.coxa);
+      this.scratch.copy(state.position).sub(this.coxa);
+      const targetDistance = this.scratch.length();
+      const maximumReach = leg.reach.max * REACH_LIMIT;
+      const minimumReach = leg.reach.min;
+      if (targetDistance > maximumReach && targetDistance > 1e-6) {
+        this.target.copy(this.coxa).addScaledVector(this.scratch, maximumReach / targetDistance);
+        this.ik.solve(legId, this.target);
+      } else if (targetDistance < minimumReach && targetDistance > 1e-6) {
+        this.target.copy(this.coxa).addScaledVector(this.scratch, minimumReach / targetDistance);
+        this.ik.solve(legId, this.target);
+      } else {
+        this.ik.solve(legId, state.position);
+      }
     }
   }
 
@@ -1156,6 +1178,7 @@ export class SpiderChoreographer {
   }
 
   private solveLeg(legId: SpiderLegId, target: THREE.Vector3 | { x: number; y: number; z: number }): void {
+    const leg = this.rig.legs[legId];
     let visualTarget = this.visualFootTargets.get(legId);
     if (!visualTarget) {
       visualTarget = new THREE.Vector3(target.x, target.y, target.z);
@@ -1165,6 +1188,23 @@ export class SpiderChoreographer {
       // give is enough to remove a pop without making a planted foot look loose.
       const alpha = 1 - Math.exp(-this.poseDelta * 32);
       visualTarget.lerp(this.target.set(target.x, target.y, target.z), alpha);
+    }
+
+    // A swing arc can leave the leg's workspace even when both silk contacts
+    // are valid. Feeding that point straight to IK is what produced the elevator
+    // stretch: the solver tried to preserve the foot path by folding adjacent
+    // hinges against one another. Keep every intermediate target inside the
+    // authored radial workspace. Planted contacts that reach this boundary are
+    // already marked strained by the gait and scheduled for replacement.
+    leg.chain[0].getWorldPosition(this.coxa);
+    this.target.copy(visualTarget).sub(this.coxa);
+    const targetDistance = this.target.length();
+    const minimumReach = leg.reach.min;
+    const maximumReach = leg.reach.max * REACH_LIMIT;
+    if (targetDistance > maximumReach && targetDistance > 1e-6) {
+      visualTarget.copy(this.target.multiplyScalar(maximumReach / targetDistance)).add(this.coxa);
+    } else if (targetDistance < minimumReach && targetDistance > 1e-6) {
+      visualTarget.copy(this.target.multiplyScalar(minimumReach / targetDistance)).add(this.coxa);
     }
     this.ik.solve(legId, visualTarget);
   }

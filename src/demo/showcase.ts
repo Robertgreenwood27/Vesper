@@ -7,6 +7,7 @@ import { loadSpiderRig } from "../spider/SpiderRigLoader";
 import { createWebNetworkTraversal } from "../traversal/index";
 import { createCobweb } from "../web/createCobweb";
 import { DewSystem, Firefly } from "./Atmosphere";
+import { RigDiagnostics } from "./RigDiagnostics";
 import { SilkRenderer } from "./SilkRenderer";
 import {
   chooseAutonomousBehavior,
@@ -183,6 +184,22 @@ const tuned = (key: string): number | undefined => {
 };
 const feedingTimeScale = THREE.MathUtils.clamp(tuned("feedingScale") ?? 1, 0.05, 4);
 const forceCachedMeal = tuned("cacheMeal") === 1;
+const rigDebugEnabled = tuning.get("rigDebug") === "1";
+let rigDebugPaused = false;
+let rigDebugSteps = 0;
+let rigDiagnostics: RigDiagnostics | null = null;
+
+function setRigDebugPaused(paused: boolean): void {
+  if (!rigDebugEnabled) return;
+  rigDebugPaused = paused;
+  if (!paused) rigDebugSteps = 0;
+  rigDiagnostics?.setPaused(paused);
+}
+
+function stepRigDebug(): void {
+  if (!rigDebugEnabled || !rigDebugPaused) return;
+  rigDebugSteps += 1;
+}
 
 const web = createCobweb({
   // The lab intentionally exaggerates compliance so it can be measured. The
@@ -1040,6 +1057,14 @@ async function boot(): Promise<void> {
     onFootPlant: (_legId, address) => pressFootfall(address),
   });
 
+  if (rigDebugEnabled) {
+    rigDiagnostics = new RigDiagnostics(scene, habitat, rig, choreographer, {
+      onTogglePause: () => setRigDebugPaused(!rigDebugPaused),
+      onStep: stepRigDebug,
+    });
+    rigDiagnostics.setPaused(false);
+  }
+
   // Let the web hang and settle before the spider arrives, so she lands on silk
   // that has already found its shape rather than silk still falling.
   for (let i = 0; i < 240; i += 1) {
@@ -1223,6 +1248,10 @@ if (import.meta.env.DEV) {
     /** Rebuilds the spider with different tuning, for sweeping settings. */
     rebuild: (overrides: Partial<Record<string, number>>) => {
       if (!loadedRig) return false;
+      // The new solver captures "rest" from the bones as they stand, so put
+      // them back into bind pose first — rebuilding mid-stride would otherwise
+      // bake the current walking pose in as the rig's neutral.
+      choreographer?.ik.resetAll();
       choreographer = new SpiderChoreographer({
         rig: loadedRig,
         traversal,
@@ -1233,8 +1262,10 @@ if (import.meta.env.DEV) {
         } as ConstructorParameters<typeof SpiderChoreographer>[0]["config"],
         onFootPlant: (_legId, address) => pressFootfall(address),
       });
+      rigDiagnostics?.setChoreographer(choreographer);
       return settleSpider();
     },
+    rigDiagnostics: () => rigDiagnostics?.snapshot() ?? [],
   };
 }
 
@@ -1708,6 +1739,14 @@ document.querySelectorAll<HTMLButtonElement>("[data-action]").forEach((button) =
 });
 
 window.addEventListener("keydown", (event) => {
+  if (rigDebugEnabled && event.key.toLowerCase() === "p") {
+    setRigDebugPaused(!rigDebugPaused);
+    return;
+  }
+  if (rigDebugEnabled && event.key === ".") {
+    stepRigDebug();
+    return;
+  }
   if (!choreographer) {
     return;
   }
@@ -2151,8 +2190,14 @@ let previous = performance.now();
 let accumulator = 0;
 
 function frame(now: number): void {
-  const delta = Math.min((now - previous) / 1000, MAX_FRAME_DELTA);
+  const realDelta = Math.min((now - previous) / 1000, MAX_FRAME_DELTA);
   previous = now;
+  let delta = realDelta;
+  if (rigDebugEnabled && rigDebugPaused) {
+    accumulator = 0;
+    delta = rigDebugSteps > 0 ? FIXED_TIME_STEP : 0;
+    if (rigDebugSteps > 0) rigDebugSteps -= 1;
+  }
   accumulator += delta;
   habitatTime += delta;
   removeFeedingLimbPose();
@@ -2194,6 +2239,7 @@ function frame(now: number): void {
   }
   controls.update();
   silk.update(camera);
+  rigDiagnostics?.update(now);
   renderer.render(scene, camera);
   requestAnimationFrame(frame);
 }

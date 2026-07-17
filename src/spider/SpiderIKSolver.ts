@@ -130,6 +130,7 @@ export class SpiderIKSolver {
   private readonly quaternionA = new THREE.Quaternion();
   private readonly quaternionB = new THREE.Quaternion();
   private readonly quaternionC = new THREE.Quaternion();
+  private readonly quaternionD = new THREE.Quaternion();
   private readonly euler = new THREE.Euler(0, 0, 0, 'XYZ');
 
   constructor(
@@ -291,40 +292,29 @@ export class SpiderIKSolver {
     chain.bones[chain.drivenCount].getWorldPosition(result.solvedFootPosition);
     result.residual = result.solvedFootPosition.distanceTo(result.requestedTarget);
 
-    // Joint clamps change the foot position after FABRIK has finished, which is
-    // exactly how limit enforcement used to detach feet from their silk. So when
-    // a clamp fired and pushed the foot off target, re-run FABRIK *from the
-    // clamped pose*: the unconstrained joints — chiefly the ball-and-socket coxa
-    // — absorb the rotation the hinges refused, and the pose converges to one
-    // that satisfies both the limits and the contact.
-    if (enforceJointLimits && reachable) {
-      for (
-        let round = 0;
-        round < 2 &&
-        result.jointClampCount > 0 &&
-        result.residual > tolerance * 4 &&
-        this.readCurrentPose(chain);
-        round += 1
-      ) {
-        result.iterations += this.solveReachable(
-          chain,
-          target,
-          rootX,
-          rootY,
-          rootZ,
-          maxIterations,
-          tolerance,
-          bendBias,
-        );
-        if (!allFinite(positions)) break;
-        if (!this.applySolvedPose(chain, enforceJointLimits)) {
-          this.restorePreviousPose(chain);
-          result.status = 'non-finite-result';
-          result.message = 'A refined bone quaternion was invalid; the previous pose was restored.';
-          return result;
-        }
-        chain.bones[chain.drivenCount].getWorldPosition(result.solvedFootPosition);
-        result.residual = result.solvedFootPosition.distanceTo(result.requestedTarget);
+    // Applying angular limits after positional FABRIK can move the foot away
+    // from its contact. Refine the actual bone hierarchy with constrained CCD:
+    // lengths stay exact, every candidate rotation is clamped, and the free
+    // coxa shares only as much correction as the legal chain can support.
+    if (
+      enforceJointLimits &&
+      reachable &&
+      result.jointClampCount > 0 &&
+      result.residual > tolerance
+    ) {
+      result.iterations += this.refineConstrainedPose(
+        chain,
+        target,
+        maxIterations * 2,
+        tolerance,
+      );
+      chain.bones[chain.drivenCount].getWorldPosition(result.solvedFootPosition);
+      result.residual = result.solvedFootPosition.distanceTo(result.requestedTarget);
+      if (!this.readCurrentPose(chain)) {
+        this.restorePreviousPose(chain);
+        result.status = 'non-finite-result';
+        result.message = 'The constrained pose could not be measured; the previous pose was restored.';
+        return result;
       }
     }
     result.solvedReach = result.solvedFootPosition.distanceTo(
@@ -721,61 +711,177 @@ export class SpiderIKSolver {
     return iterations;
   }
 
+  /**
+   * Pulls every interior joint toward the side of the chain the preferred
+   * (rest-shaped, target-aimed) polyline says it belongs on.
+   *
+   * The original version corrected only the single pole joint, which left the
+   * other joints free to fold backward — FABRIK happily doubles a chain over at
+   * the short patella when a target moves in close, and once folded it stays
+   * folded, because a fold is a perfectly stable FABRIK solution. The skinned
+   * mesh cannot cover a 170° joint reversal, so those folds render as
+   * dislocated leg segments. Correcting each joint's bend *direction* toward
+   * the preferred polyline every iteration makes the natural arch the stable
+   * solution instead, at the cost of a handful of vector operations.
+   */
   private applyPreferredBend(chain: RuntimeChain, bendBias: number): void {
     const positions = chain.positions;
-    const i = THREE.MathUtils.clamp(chain.poleJointIndex, 1, chain.drivenCount - 1);
-    const previous = (i - 1) * 3;
-    const current = i * 3;
-    const next = (i + 1) * 3;
+    const preferred = chain.preferredPositions;
 
-    this.vectorA.set(
-      positions[next] - positions[previous],
-      positions[next + 1] - positions[previous + 1],
-      positions[next + 2] - positions[previous + 2],
-    );
-    const axisLengthSq = this.vectorA.lengthSq();
-    if (axisLengthSq <= EPSILON * EPSILON) return;
-    this.vectorA.multiplyScalar(1 / Math.sqrt(axisLengthSq));
+    for (let i = 1; i < chain.drivenCount; i += 1) {
+      const previous = (i - 1) * 3;
+      const current = i * 3;
+      const next = (i + 1) * 3;
 
-    this.vectorB.set(
-      positions[current] - positions[previous],
-      positions[current + 1] - positions[previous + 1],
-      positions[current + 2] - positions[previous + 2],
-    );
-    const axialDistance = this.vectorB.dot(this.vectorA);
-    this.vectorB.addScaledVector(this.vectorA, -axialDistance);
+      this.vectorA.set(
+        positions[next] - positions[previous],
+        positions[next + 1] - positions[previous + 1],
+        positions[next + 2] - positions[previous + 2],
+      );
+      const axisLengthSq = this.vectorA.lengthSq();
+      if (axisLengthSq <= EPSILON * EPSILON) continue;
+      this.vectorA.multiplyScalar(1 / Math.sqrt(axisLengthSq));
 
-    this.vectorC.copy(chain.preferredPoleWorld).sub(
-      this.vectorD.set(
-        positions[previous],
-        positions[previous + 1],
-        positions[previous + 2],
-      ),
-    );
-    this.vectorC.addScaledVector(this.vectorA, -this.vectorC.dot(this.vectorA));
+      this.vectorB.set(
+        positions[current] - positions[previous],
+        positions[current + 1] - positions[previous + 1],
+        positions[current + 2] - positions[previous + 2],
+      );
+      const axialDistance = this.vectorB.dot(this.vectorA);
+      this.vectorB.addScaledVector(this.vectorA, -axialDistance);
 
-    if (
-      this.vectorB.lengthSq() <= EPSILON * EPSILON ||
-      this.vectorC.lengthSq() <= EPSILON * EPSILON
-    ) return;
-    this.vectorB.normalize();
-    this.vectorC.normalize();
-    this.vectorD.crossVectors(this.vectorB, this.vectorC);
-    const sine = this.vectorA.dot(this.vectorD);
-    const cosine = THREE.MathUtils.clamp(this.vectorB.dot(this.vectorC), -1, 1);
-    const angle = Math.atan2(sine, cosine) * bendBias;
-    this.quaternionA.setFromAxisAngle(this.vectorA, angle);
+      // Where the preferred polyline puts this joint, relative to the same
+      // neighbour, projected into the plane perpendicular to the current axis.
+      this.vectorC.set(
+        preferred[current] - preferred[previous],
+        preferred[current + 1] - preferred[previous + 1],
+        preferred[current + 2] - preferred[previous + 2],
+      );
+      this.vectorC.addScaledVector(this.vectorA, -this.vectorC.dot(this.vectorA));
 
-    const radialLength = Math.sqrt(
-      Math.max(
-        0,
-        distanceSquaredAt(positions, current, previous) - axialDistance * axialDistance,
-      ),
-    );
-    this.vectorB.applyQuaternion(this.quaternionA).multiplyScalar(radialLength);
-    positions[current] = positions[previous] + this.vectorA.x * axialDistance + this.vectorB.x;
-    positions[current + 1] = positions[previous + 1] + this.vectorA.y * axialDistance + this.vectorB.y;
-    positions[current + 2] = positions[previous + 2] + this.vectorA.z * axialDistance + this.vectorB.z;
+      if (
+        this.vectorB.lengthSq() <= EPSILON * EPSILON ||
+        this.vectorC.lengthSq() <= EPSILON * EPSILON
+      ) continue;
+      this.vectorB.normalize();
+      this.vectorC.normalize();
+      this.vectorD.crossVectors(this.vectorB, this.vectorC);
+      const sine = this.vectorA.dot(this.vectorD);
+      const cosine = THREE.MathUtils.clamp(this.vectorB.dot(this.vectorC), -1, 1);
+      // A joint on the wrong side gets a stronger pull than one merely off
+      // angle, so folds unwind within an iteration or two while ordinary
+      // shaping stays gentle.
+      const misaligned = cosine < 0 ? 1 : bendBias * 0.5;
+      const angle = Math.atan2(sine, cosine) * Math.min(1, misaligned);
+      if (Math.abs(angle) < 1e-4) continue;
+      this.quaternionA.setFromAxisAngle(this.vectorA, angle);
+
+      const radialLength = Math.sqrt(
+        Math.max(
+          0,
+          distanceSquaredAt(positions, current, previous) - axialDistance * axialDistance,
+        ),
+      );
+      this.vectorB.applyQuaternion(this.quaternionA).multiplyScalar(radialLength);
+      positions[current] = positions[previous] + this.vectorA.x * axialDistance + this.vectorB.x;
+      positions[current + 1] = positions[previous + 1] + this.vectorA.y * axialDistance + this.vectorB.y;
+      positions[current + 2] = positions[previous + 2] + this.vectorA.z * axialDistance + this.vectorB.z;
+    }
+  }
+
+  /**
+   * Largest world-space correction one bone may take per CCD sweep, radians.
+   *
+   * Undamped CCD is a fold generator: each sweep hands the whole remaining
+   * error to whichever joint helps most, which slams that joint against its
+   * clamp boundary while its neighbours sit still — locally legal, but the
+   * pose zig-zags and the skinned mesh visibly dislocates at the joints.
+   * Damping spreads the same correction across the chain over several sweeps,
+   * which converges to the smooth solution instead of the extreme one.
+   */
+  private static readonly CCD_STEP_RADIANS = 0.11;
+
+  private refineConstrainedPose(
+    chain: RuntimeChain,
+    target: SpiderIKTarget,
+    maxIterations: number,
+    tolerance: number,
+  ): number {
+    const endBone = chain.bones[chain.drivenCount];
+    let iterations = 0;
+
+    for (; iterations < maxIterations; iterations += 1) {
+      endBone.getWorldPosition(this.worldPosition);
+      if (this.worldPosition.distanceToSquared(target) <= tolerance * tolerance) break;
+
+      for (let i = chain.drivenCount - 1; i >= 0; i -= 1) {
+        const bone = chain.bones[i];
+        bone.getWorldPosition(this.worldPosition);
+        endBone.getWorldPosition(this.vectorA);
+        this.vectorA.sub(this.worldPosition);
+        this.vectorB.set(
+          target.x - this.worldPosition.x,
+          target.y - this.worldPosition.y,
+          target.z - this.worldPosition.z,
+        );
+        if (
+          this.vectorA.lengthSq() <= EPSILON * EPSILON ||
+          this.vectorB.lengthSq() <= EPSILON * EPSILON
+        ) continue;
+
+        this.vectorA.normalize();
+        this.vectorB.normalize();
+        setStableFromUnitVectors(
+          this.vectorA,
+          this.vectorB,
+          this.vectorC.set(0, 0, 1),
+          this.quaternionA,
+        );
+        this.quaternionD.identity();
+        this.quaternionA.copy(
+          this.quaternionD.rotateTowards(this.quaternionA, SpiderIKSolver.CCD_STEP_RADIANS),
+        );
+        const parent = bone.parent;
+        if (parent) parent.getWorldQuaternion(this.quaternionB);
+        else this.quaternionB.identity();
+        this.quaternionC
+          .copy(this.quaternionB)
+          .invert()
+          .multiply(this.quaternionA)
+          .multiply(this.quaternionB)
+          .multiply(bone.quaternion)
+          .normalize();
+
+        const limitOffset = i * 6;
+        if (hasLimits(chain.limits, limitOffset)) {
+          const q = i * 4;
+          this.quaternionD.set(
+            chain.restQuaternions[q],
+            chain.restQuaternions[q + 1],
+            chain.restQuaternions[q + 2],
+            chain.restQuaternions[q + 3],
+          );
+          this.quaternionA
+            .copy(this.quaternionD)
+            .invert()
+            .multiply(this.quaternionC)
+            .normalize();
+          this.euler.setFromQuaternion(this.quaternionA, 'XYZ');
+          this.euler.x = clampIfLimited(this.euler.x, chain.limits, limitOffset);
+          this.euler.y = clampIfLimited(this.euler.y, chain.limits, limitOffset + 2);
+          this.euler.z = clampIfLimited(this.euler.z, chain.limits, limitOffset + 4);
+          this.quaternionA.setFromEuler(this.euler);
+          this.quaternionC.copy(this.quaternionD).multiply(this.quaternionA).normalize();
+        }
+
+        if (!isFiniteQuaternion(this.quaternionC)) continue;
+        bone.quaternion.copy(this.quaternionC);
+        bone.updateWorldMatrix(true, true);
+      }
+    }
+
+    chain.bones[0].updateWorldMatrix(true, true);
+    return iterations;
   }
 
   private applySolvedPose(chain: RuntimeChain, enforceLimits: boolean): boolean {
