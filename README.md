@@ -38,9 +38,9 @@ Phone controls:
 
 - Click a strand to suggest a destination.
 - Offer a moth to trigger a hunt, leg-driven wrapping, a long meal, and occasional prey caching.
-- Touch the web to send a recognizable vibration — and hear the strand answer.
+- Touch the web to send a recognizable vibration.
 - Send Vesper to her retreat.
-- Toggle camera tracking, the red observation light, or habitat sound.
+- Toggle camera tracking or the red observation light.
 - Keyboard: `R` retreat, `F` freeze, `G` travel far, `Space` rest.
 
 Her name, appetite, familiarity, visits, and feedings are stored locally in the
@@ -60,15 +60,6 @@ belonged to her.
 
 ## Details worth waiting for
 
-- **The hourglass.** She hangs inverted with her belly to the silk, so her
-  ventral abdomen faces the keeper — and it carries the red hourglass, draped
-  procedurally over the measured surface of her abdomen rather than painted on
-  the model.
-- **Sound.** Everything audible is synthesized live: touching silk excites a
-  Karplus–Strong string tuned to that strand's actual rest length, a trapped
-  moth is amplitude-modulated air, and the room breathes a nearly subliminal
-  tone. There are no audio files. Sound starts with your first touch and can be
-  muted from the care tray.
 - **Dew.** In the small hours of the morning the web beads with condensation.
   Each drop rides a live physics segment, so her footfalls shake it, and it
   evaporates slowly once the day warms. (`?dew=1` forces it.)

@@ -7,8 +7,6 @@ import { loadSpiderRig } from "../spider/SpiderRigLoader";
 import { createWebNetworkTraversal } from "../traversal/index";
 import { createCobweb } from "../web/createCobweb";
 import { DewSystem, Firefly } from "./Atmosphere";
-import { attachHourglass } from "./HourglassMark";
-import { SilkAudio } from "./SilkAudio";
 import { SilkRenderer } from "./SilkRenderer";
 import "./showcase.css";
 
@@ -187,15 +185,7 @@ const solver = new WebPhysicsSolver(web.network, {
 const traversal = createWebNetworkTraversal(web.network, FIXED_TIME_STEP);
 const silk = new SilkRenderer(scene, web.network);
 
-// --- Atmosphere & sound --------------------------------------------------------
-
-const SOUND_MEMORY_KEY = "pet-black-widow:sound:v1";
-const audio = new SilkAudio(localStorage.getItem(SOUND_MEMORY_KEY) !== "0");
-// Browsers gate audio behind a gesture; any first touch is the key that unlocks it.
-window.addEventListener("pointerdown", () => audio.wake(), { passive: true });
-document
-  .querySelector<HTMLButtonElement>("[data-action='sound']")
-  ?.setAttribute("aria-pressed", String(audio.enabled));
+// --- Atmosphere ----------------------------------------------------------------
 
 const dew = new DewSystem(scene, web.network, mobileExperience ? 70 : 120);
 const firefly = new Firefly(scene);
@@ -800,9 +790,6 @@ function pluckSilk(strength = 1.2): void {
   const localIndex = Math.max(1, Math.min(strand.particleIndices.length - 2, Math.round(address.t * (strand.particleIndices.length - 1))));
   const particle = strand.particleIndices[localIndex];
   web.network.particles.previousPositions[particle * 3 + 2] -= strength * FIXED_TIME_STEP;
-  // A string's pitch falls with its length; the web is an instrument tuned by
-  // its own topology, so every strand answers the touch in its own voice.
-  audio.pluck(760 / (0.6 + strand.totalRestLength * 0.42), Math.min(1, strength * 0.55));
   traversal.getWorldPosition(address, mothWorldPosition);
   choreographer?.setIntent({ kind: "attend", at: mothWorldPosition });
 }
@@ -816,17 +803,15 @@ function setStatus(text: string): void {
  *
  * The GLB ships an untextured pure-white `MeshStandardMaterial` at roughness 1 —
  * it is a rig deliverable, not an art asset — so out of the box she renders as a
- * pale plastic model of a spider. No amount of lighting fixes white. A widow is
- * near-black and *glossy*, and the gloss is doing most of the work: the moving
- * specular highlight across the abdomen is what sells her as wet chitin rather
- * than a silhouette. The game will bring its own materials; this is so the lab
- * shows a black widow.
+ * pale plastic model of a spider. No amount of lighting fixes white. She wears
+ * matte black chitin with just enough sheen that a soft highlight still slides
+ * across the abdomen and separates her from the dark behind her.
  */
 function dressAsWidow(mesh: THREE.SkinnedMesh): void {
   const widow = new THREE.MeshStandardMaterial({
     color: 0x0a0a0e,
-    roughness: 0.26,
-    metalness: 0.05,
+    roughness: 0.58,
+    metalness: 0.04,
   });
   mesh.material = widow;
   mesh.castShadow = true;
@@ -941,10 +926,6 @@ async function boot(): Promise<void> {
     setStatus("She cannot find safe footing in this web.");
     return;
   }
-  // The hourglass reads its anatomy from the settled pose, so it goes on last:
-  // she hangs belly-to-silk, and world up in this pose is her ventral side.
-  rig.rootObject.updateMatrixWorld(true);
-  attachHourglass(rig);
   traversal.getWorldPosition({ strandId: web.homeStrandId, t: 0.5 }, homeWorldPosition);
   setPetMode(
     "watching",
@@ -998,7 +979,7 @@ if (import.meta.env.DEV) {
         : [],
     travelTo: (nodeId: string) =>
       choreographer?.setIntent({ kind: "travel", to: { kind: "node", nodeId } }),
-    raw: () => ({ choreographer, traversal, rig: loadedRig, network: web.network, dew, firefly, audio }),
+    raw: () => ({ choreographer, traversal, rig: loadedRig, network: web.network, dew, firefly }),
     /** Frames the spider so a screenshot actually shows her. */
     look: (distance = 1.6, azimuth = 0.7, elevation = 0.35) => {
       if (!loadedRig) return null;
@@ -1228,19 +1209,6 @@ function toggleLights(button: HTMLButtonElement): void {
   announce(redWatch ? "Red observation light — less visible to her" : "Cool habitat light restored");
 }
 
-function toggleSound(button: HTMLButtonElement): void {
-  const next = !audio.enabled;
-  audio.setEnabled(next);
-  button.setAttribute("aria-pressed", String(next));
-  try {
-    localStorage.setItem(SOUND_MEMORY_KEY, next ? "1" : "0");
-  } catch {
-    // Preference simply won't persist.
-  }
-  announce(next ? "Sound on · the web has a voice now" : "Sound off · the habitat goes silent");
-  if (next) audio.pluck(300, 0.5);
-}
-
 function renamePet(): void {
   const next = window.prompt("What should she answer to?", memory.name);
   if (!next?.trim()) return;
@@ -1268,9 +1236,6 @@ document.querySelectorAll<HTMLButtonElement>("[data-action]").forEach((button) =
         break;
       case "lights":
         toggleLights(button);
-        break;
-      case "sound":
-        toggleSound(button);
         break;
       case "rename":
         renamePet();
@@ -1335,13 +1300,8 @@ function updateMoth(dt: number): void {
     if (strand) {
       const point = strand.particleIndices[Math.max(1, strand.particleIndices.length >> 1)];
       web.network.particles.previousPositions[point * 3] -= 0.42 * FIXED_TIME_STEP;
-      // The struggle is audible: wingbeats, and the strand ticking under them.
-      audio.flutter(0.9 + Math.random() * 0.8, mothStage === "hunting" ? 1 : 0.7);
-      audio.pluck(760 / (0.6 + strand.totalRestLength * 0.42), 0.1);
     }
     nextMothTremor = 0.7 + Math.random() * 1.5;
-  } else if (mothStage === "wrapping" && Math.random() < dt * 2.2) {
-    audio.flutter(0.35, 0.3);
   }
 
   if (mothStage === "noticed" && mothTimer > 1.1 * feedingTimeScale) {
