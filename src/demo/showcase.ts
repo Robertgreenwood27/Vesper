@@ -799,19 +799,31 @@ function setStatus(text: string): void {
 }
 
 /**
- * Makes her black.
+ * Dresses her in the model's original authored material.
  *
- * The GLB ships an untextured pure-white `MeshStandardMaterial` at roughness 1 —
- * it is a rig deliverable, not an art asset — so out of the box she renders as a
- * pale plastic model of a spider. No amount of lighting fixes white. She wears
- * matte black chitin with just enough sheen that a soft highlight still slides
- * across the abdomen and separates her from the dark behind her.
+ * The GLB ships an untextured pure-white `MeshStandardMaterial` — it is a rig
+ * deliverable, not an art asset — but the mesh kept its UVs, so the original
+ * texture set drops straight back on: painted near-black chitin with the red
+ * hourglass where it belongs, an authored roughness map that keeps her matte
+ * with a believable sheen, and a normal map for the fine surface detail.
+ * Textures loaded outside GLTFLoader default to `flipY = true`, which would
+ * mirror every map against glTF's UV convention — hence the explicit false.
  */
 function dressAsWidow(mesh: THREE.SkinnedMesh): void {
+  const loader = new THREE.TextureLoader();
+  const load = (url: string, isColor: boolean): THREE.Texture => {
+    const texture = loader.load(url);
+    texture.flipY = false;
+    if (isColor) texture.colorSpace = THREE.SRGBColorSpace;
+    return texture;
+  };
+
   const widow = new THREE.MeshStandardMaterial({
-    color: 0x0a0a0e,
-    roughness: 0.58,
-    metalness: 0.04,
+    map: load("/assets/spider/textures/widow_basecolor.png", true),
+    roughnessMap: load("/assets/spider/textures/widow_roughness.png", false),
+    normalMap: load("/assets/spider/textures/widow_normal.png", false),
+    roughness: 1,
+    metalness: 0,
   });
   mesh.material = widow;
   mesh.castShadow = true;
