@@ -6,6 +6,9 @@ import { SpiderChoreographer } from "../spider/choreography/index";
 import { loadSpiderRig } from "../spider/SpiderRigLoader";
 import { createWebNetworkTraversal } from "../traversal/index";
 import { createCobweb } from "../web/createCobweb";
+import { DewSystem, Firefly } from "./Atmosphere";
+import { attachHourglass } from "./HourglassMark";
+import { SilkAudio } from "./SilkAudio";
 import { SilkRenderer } from "./SilkRenderer";
 import "./showcase.css";
 
@@ -183,6 +186,36 @@ const solver = new WebPhysicsSolver(web.network, {
 });
 const traversal = createWebNetworkTraversal(web.network, FIXED_TIME_STEP);
 const silk = new SilkRenderer(scene, web.network);
+
+// --- Atmosphere & sound --------------------------------------------------------
+
+const SOUND_MEMORY_KEY = "pet-black-widow:sound:v1";
+const audio = new SilkAudio(localStorage.getItem(SOUND_MEMORY_KEY) !== "0");
+// Browsers gate audio behind a gesture; any first touch is the key that unlocks it.
+window.addEventListener("pointerdown", () => audio.wake(), { passive: true });
+document
+  .querySelector<HTMLButtonElement>("[data-action='sound']")
+  ?.setAttribute("aria-pressed", String(audio.enabled));
+
+const dew = new DewSystem(scene, web.network, mobileExperience ? 70 : 120);
+const firefly = new Firefly(scene);
+const forceDew = tuned("dew") === 1;
+const forceFirefly = tuned("firefly") === 1;
+let dewAnnounced = false;
+let nextDewCheck = 0;
+let nextFireflyAt = forceFirefly ? 6 : 120 + Math.random() * 240;
+let nextFireflyGlance = 0;
+let fireflyHeldHerGaze = false;
+
+function isNightHour(): boolean {
+  const hour = new Date().getHours();
+  return hour >= 20 || hour < 5;
+}
+
+function isDewHour(): boolean {
+  const hour = new Date().getHours();
+  return hour >= 4 && hour < 9;
+}
 
 let choreographer: SpiderChoreographer | null = null;
 let loadedRig: Awaited<ReturnType<typeof loadSpiderRig>> | null = null;
@@ -767,6 +800,9 @@ function pluckSilk(strength = 1.2): void {
   const localIndex = Math.max(1, Math.min(strand.particleIndices.length - 2, Math.round(address.t * (strand.particleIndices.length - 1))));
   const particle = strand.particleIndices[localIndex];
   web.network.particles.previousPositions[particle * 3 + 2] -= strength * FIXED_TIME_STEP;
+  // A string's pitch falls with its length; the web is an instrument tuned by
+  // its own topology, so every strand answers the touch in its own voice.
+  audio.pluck(760 / (0.6 + strand.totalRestLength * 0.42), Math.min(1, strength * 0.55));
   traversal.getWorldPosition(address, mothWorldPosition);
   choreographer?.setIntent({ kind: "attend", at: mothWorldPosition });
 }
@@ -795,6 +831,59 @@ function dressAsWidow(mesh: THREE.SkinnedMesh): void {
   mesh.material = widow;
   mesh.castShadow = true;
   mesh.receiveShadow = true;
+}
+
+/**
+ * Eye shine. Spider eyes throw light straight back at whoever holds the lamp —
+ * the tapetum behind the retina works like a bicycle reflector. Under the red
+ * observation light, hers catch. It is the red-light mode's reward: turn the
+ * lamp on her and the dark looks back.
+ */
+let eyeShine: THREE.Sprite | null = null;
+
+function attachEyeShine(head: THREE.Object3D): void {
+  const canvas = document.createElement("canvas");
+  canvas.width = 64;
+  canvas.height = 32;
+  const ctx = canvas.getContext("2d");
+  if (ctx) {
+    // Two principal glints with two fainter ones above: her anterior median
+    // eyes catch hardest, the laterals barely.
+    const glint = (x: number, y: number, r: number, strength: number): void => {
+      const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+      g.addColorStop(0, `rgba(255, 214, 200, ${strength})`);
+      g.addColorStop(0.4, `rgba(255, 96, 80, ${strength * 0.55})`);
+      g.addColorStop(1, "rgba(255, 60, 50, 0)");
+      ctx.fillStyle = g;
+      ctx.fillRect(x - r, y - r, r * 2, r * 2);
+    };
+    glint(22, 19, 8, 1);
+    glint(42, 19, 8, 1);
+    glint(15, 9, 4, 0.4);
+    glint(49, 9, 4, 0.4);
+  }
+  const texture = new THREE.CanvasTexture(canvas);
+  eyeShine = new THREE.Sprite(
+    new THREE.SpriteMaterial({
+      map: texture,
+      transparent: true,
+      opacity: 0,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      depthTest: false,
+    }),
+  );
+  eyeShine.scale.set(0.09, 0.045, 1);
+  eyeShine.position.set(0, 0.06, 0);
+  head.add(eyeShine);
+}
+
+function updateEyeShine(dt: number): void {
+  if (!eyeShine) return;
+  const target = redWatch ? 0.85 + Math.sin(habitatTime * 0.7) * 0.1 : 0;
+  const material = eyeShine.material;
+  material.opacity += (target - material.opacity) * Math.min(1, dt * 2.5);
+  eyeShine.visible = material.opacity > 0.02;
 }
 
 /** Places her on the home strand. Returns false if she could not find footing. */
@@ -832,6 +921,7 @@ async function boot(): Promise<void> {
   const rig = await loadSpiderRig();
   loadedRig = rig;
   dressAsWidow(rig.mesh);
+  attachEyeShine(rig.head);
   scene.add(rig.rootObject);
 
   choreographer = new SpiderChoreographer({
@@ -851,6 +941,10 @@ async function boot(): Promise<void> {
     setStatus("She cannot find safe footing in this web.");
     return;
   }
+  // The hourglass reads its anatomy from the settled pose, so it goes on last:
+  // she hangs belly-to-silk, and world up in this pose is her ventral side.
+  rig.rootObject.updateMatrixWorld(true);
+  attachHourglass(rig);
   traversal.getWorldPosition({ strandId: web.homeStrandId, t: 0.5 }, homeWorldPosition);
   setPetMode(
     "watching",
@@ -904,7 +998,7 @@ if (import.meta.env.DEV) {
         : [],
     travelTo: (nodeId: string) =>
       choreographer?.setIntent({ kind: "travel", to: { kind: "node", nodeId } }),
-    raw: () => ({ choreographer, traversal, rig: loadedRig, network: web.network }),
+    raw: () => ({ choreographer, traversal, rig: loadedRig, network: web.network, dew, firefly, audio }),
     /** Frames the spider so a screenshot actually shows her. */
     look: (distance = 1.6, azimuth = 0.7, elevation = 0.35) => {
       if (!loadedRig) return null;
@@ -1134,6 +1228,19 @@ function toggleLights(button: HTMLButtonElement): void {
   announce(redWatch ? "Red observation light — less visible to her" : "Cool habitat light restored");
 }
 
+function toggleSound(button: HTMLButtonElement): void {
+  const next = !audio.enabled;
+  audio.setEnabled(next);
+  button.setAttribute("aria-pressed", String(next));
+  try {
+    localStorage.setItem(SOUND_MEMORY_KEY, next ? "1" : "0");
+  } catch {
+    // Preference simply won't persist.
+  }
+  announce(next ? "Sound on · the web has a voice now" : "Sound off · the habitat goes silent");
+  if (next) audio.pluck(300, 0.5);
+}
+
 function renamePet(): void {
   const next = window.prompt("What should she answer to?", memory.name);
   if (!next?.trim()) return;
@@ -1161,6 +1268,9 @@ document.querySelectorAll<HTMLButtonElement>("[data-action]").forEach((button) =
         break;
       case "lights":
         toggleLights(button);
+        break;
+      case "sound":
+        toggleSound(button);
         break;
       case "rename":
         renamePet();
@@ -1225,8 +1335,13 @@ function updateMoth(dt: number): void {
     if (strand) {
       const point = strand.particleIndices[Math.max(1, strand.particleIndices.length >> 1)];
       web.network.particles.previousPositions[point * 3] -= 0.42 * FIXED_TIME_STEP;
+      // The struggle is audible: wingbeats, and the strand ticking under them.
+      audio.flutter(0.9 + Math.random() * 0.8, mothStage === "hunting" ? 1 : 0.7);
+      audio.pluck(760 / (0.6 + strand.totalRestLength * 0.42), 0.1);
     }
     nextMothTremor = 0.7 + Math.random() * 1.5;
+  } else if (mothStage === "wrapping" && Math.random() < dt * 2.2) {
+    audio.flutter(0.35, 0.3);
   }
 
   if (mothStage === "noticed" && mothTimer > 1.1 * feedingTimeScale) {
@@ -1434,6 +1549,62 @@ function updateAutonomy(dt: number): void {
   activityDeadline = habitatTime + 12 + Math.random() * 20;
 }
 
+function updateAtmosphere(dt: number): void {
+  // Dew keeps its own hours. Checked lazily; condensation is not urgent.
+  if (habitatTime >= nextDewCheck) {
+    nextDewCheck = habitatTime + 20;
+    const condensed = forceDew || isDewHour();
+    dew.setCondensed(condensed);
+    if (condensed && !dewAnnounced) {
+      dewAnnounced = true;
+      announce("The night has beaded the web with dew");
+      if (!moth && (petMode === "watching" || petMode === "resting")) {
+        setPetMode(
+          "watching",
+          `${memory.name} waits while the web grows heavier, bead by bead.`,
+          "letting the dew settle",
+        );
+      }
+    }
+    if (!condensed && !forceDew) dewAnnounced = false;
+  }
+  dew.update(dt, habitatTime);
+
+  // Some nights, a visitor.
+  if (!firefly.active && (forceFirefly || isNightHour()) && habitatTime >= nextFireflyAt) {
+    firefly.launch();
+    nextFireflyGlance = habitatTime + 3;
+    fireflyHeldHerGaze = false;
+    announce("Something small and luminous is crossing the room");
+  }
+  if (firefly.active) {
+    firefly.update(dt, habitatTime);
+    // She tracks it the way she tracks everything: through stillness. Only an
+    // unoccupied spider gives the ember her attention.
+    const free = !moth && petMode !== "feeding" && petMode !== "stalking" && choreographer;
+    if (free && habitatTime >= nextFireflyGlance) {
+      nextFireflyGlance = habitatTime + 2.4;
+      choreographer?.setIntent({ kind: "attend", at: firefly.position });
+      if (!fireflyHeldHerGaze) {
+        fireflyHeldHerGaze = true;
+        setPetMode(
+          "watching",
+          `${memory.name} turns by fractions, keeping the ember exactly in front of her.`,
+          "tracking a firefly",
+        );
+      }
+    }
+  } else if (fireflyHeldHerGaze) {
+    fireflyHeldHerGaze = false;
+    nextFireflyAt = habitatTime + (forceFirefly ? 30 : 240 + Math.random() * 420);
+    rememberAutonomousAct("Tracked a firefly across the whole room without taking a step.");
+    if (!moth && petMode === "watching") {
+      choreographer?.setIntent({ kind: "rest" });
+      setPetMode("resting", `${memory.name} lets the dark go back to being dark.`, "settling again");
+    }
+  }
+}
+
 // --- Loop --------------------------------------------------------------------
 
 let viewportWidth = 0;
@@ -1478,7 +1649,9 @@ function frame(now: number): void {
 
   updateMoth(delta);
   updateAutonomy(delta);
+  updateAtmosphere(delta);
   updateFreshSilk(delta);
+  updateEyeShine(delta);
   if (toastTimer > 0) {
     toastTimer -= delta;
     if (toastTimer <= 0) toast.classList.remove("visible");

@@ -625,6 +625,30 @@ a:focus-visible {
   box-shadow: inset -5px -1px 0 #080807;
 }
 
+.sound-icon {
+  position: relative;
+  width: 9px;
+  height: 11px;
+  background: #aaa69c;
+  clip-path: polygon(0 32%, 42% 32%, 100% 0, 100% 100%, 42% 68%, 0 68%);
+}
+
+.sound-icon::after {
+  position: absolute;
+  top: 50%;
+  left: 12px;
+  width: 7px;
+  height: 7px;
+  border: 1px solid #aaa69c;
+  border-left: 0;
+  border-radius: 0 100% 100% 0 / 0 50% 50% 0;
+  transform: translateY(-50%);
+  content: "";
+}
+
+[data-action="sound"][aria-pressed="false"] .sound-icon { background: #55524c; }
+[data-action="sound"][aria-pressed="false"] .sound-icon::after { opacity: 0.25; }
+
 .instruction {
   position: absolute;
   bottom: 41px;
@@ -740,7 +764,7 @@ a:focus-visible {
     bottom: max(12px, env(safe-area-inset-bottom));
     left: max(12px, env(safe-area-inset-left));
     display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr)) 48px 48px;
+    grid-template-columns: repeat(3, minmax(0, 1fr)) repeat(3, 44px);
     gap: 6px;
   }
   .care-action,
@@ -829,7 +853,7 @@ a:focus-visible {
     bottom: max(10px, env(safe-area-inset-bottom));
     left: auto;
     display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr)) 48px 48px;
+    grid-template-columns: repeat(3, minmax(0, 1fr)) repeat(3, 44px);
     gap: 6px;
     width: min(66vw, 610px);
   }
