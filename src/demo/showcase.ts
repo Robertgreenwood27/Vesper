@@ -8,6 +8,26 @@ import { createWebNetworkTraversal } from "../traversal/index";
 import { createCobweb } from "../web/createCobweb";
 import { DewSystem, Firefly } from "./Atmosphere";
 import { SilkRenderer } from "./SilkRenderer";
+import {
+  chooseAutonomousBehavior,
+  chooseTouchResponse,
+  classifyGesture,
+  cautionOf,
+  curiosityOf,
+  deriveTemperament,
+  disruptionNear,
+  loadVesperState,
+  noteBehaviorTaken,
+  pickLocation,
+  pruneInvalidLocations,
+  recordCalmResponse,
+  recordGesture,
+  recordKeeperMealCompleted,
+  recordLocationEvent,
+  saveVesperState,
+  tickStress,
+  type GestureKind,
+} from "./VesperMemory";
 import "./showcase.css";
 
 const canvas = document.getElementById("stage") as HTMLCanvasElement;
@@ -15,11 +35,8 @@ const status = document.getElementById("status") as HTMLElement;
 const habitat = document.getElementById("habitat") as HTMLElement;
 const stateLabel = document.getElementById("state-label") as HTMLElement;
 const activityLabel = document.getElementById("activity") as HTMLElement;
-const bondMeter = document.getElementById("bond-meter") as HTMLElement;
-const bondLabel = document.getElementById("bond-label") as HTMLElement;
 const hungerMeter = document.getElementById("hunger-meter") as HTMLElement;
 const hungerLabel = document.getElementById("hunger-label") as HTMLElement;
-const memoryLine = document.getElementById("memory-line") as HTMLElement;
 const petName = document.getElementById("pet-name") as HTMLElement;
 const clock = document.getElementById("clock") as HTMLElement;
 const toast = document.getElementById("toast") as HTMLElement;
@@ -238,17 +255,6 @@ const SHOWCASE_CHOREOGRAPHY = {
   jointLimitScale: 1.35,
 } as const;
 
-interface PetMemory {
-  name: string;
-  bond: number;
-  hunger: number;
-  visits: number;
-  feedings: number;
-  lastVisit: number;
-  autonomousActs: number;
-  silkMemories: string[];
-}
-
 type PetMode =
   | "waking"
   | "watching"
@@ -263,45 +269,40 @@ type PetMode =
 
 type Instinct = "hunt" | "repair" | "shelter" | "explore" | "listen" | "groom";
 
-const MEMORY_KEY = "pet-black-widow:vesper:v1";
 const nowAtLoad = Date.now();
+const behaviorDebug = tuning.get("behaviorDebug") === "1";
 
-function readMemory(): PetMemory {
-  const fallback: PetMemory = {
-    name: "Vesper",
-    bond: 12,
-    hunger: 42,
-    visits: 0,
-    feedings: 0,
-    lastVisit: 0,
-    autonomousActs: 0,
-    silkMemories: [],
-  };
-  try {
-    const saved = JSON.parse(localStorage.getItem(MEMORY_KEY) ?? "null") as Partial<PetMemory> | null;
-    if (!saved) return fallback;
-    const elapsedHours = Math.max(0, (nowAtLoad - (saved.lastVisit ?? nowAtLoad)) / 3_600_000);
-    return {
-      name: typeof saved.name === "string" && saved.name.trim() ? saved.name.slice(0, 18) : fallback.name,
-      bond: THREE.MathUtils.clamp(saved.bond ?? fallback.bond, 0, 100),
-      hunger: THREE.MathUtils.clamp((saved.hunger ?? fallback.hunger) + elapsedHours * 1.8, 0, 100),
-      visits: Math.max(0, Math.floor(saved.visits ?? 0)),
-      feedings: Math.max(0, Math.floor(saved.feedings ?? 0)),
-      lastVisit: saved.lastVisit ?? 0,
-      autonomousActs: Math.max(0, Math.floor(saved.autonomousActs ?? 0)),
-      silkMemories: Array.isArray(saved.silkMemories)
-        ? saved.silkMemories.filter((item): item is string => typeof item === "string").slice(0, 3)
-        : [],
-    };
-  } catch {
-    return fallback;
-  }
+const {
+  state: memory,
+  hoursAway,
+  newSession,
+  budget: sessionBudget,
+} = loadVesperState(localStorage, nowAtLoad);
+const temperament = deriveTemperament(memory.temperamentSeed);
+pruneInvalidLocations(memory, (strandId) => web.network.strands.has(strandId));
+
+/** Console-only development window into the hidden state. Never touches the UI. */
+function debugMind(label: string, detail?: unknown): void {
+  if (!behaviorDebug) return;
+  console.debug(
+    `[vesper] ${label}`,
+    {
+      familiarity: +memory.familiarity.toFixed(3),
+      trust: +memory.trust.toFixed(3),
+      stress: +memory.stress.toFixed(3),
+      temperament: {
+        boldness: +temperament.boldness.toFixed(2),
+        vibrationSensitivity: +temperament.vibrationSensitivity.toFixed(2),
+        foodMotivation: +temperament.foodMotivation.toFixed(2),
+      },
+      locations: memory.locations.length,
+      visitDays: memory.visitDays,
+    },
+    detail ?? "",
+  );
 }
 
-const memory = readMemory();
-const previousVisit = memory.lastVisit;
-memory.visits += 1;
-memory.lastVisit = nowAtLoad;
+debugMind(`loaded · away ${hoursAway.toFixed(1)}h · newSession=${newSession}`);
 let petMode: PetMode = "waking";
 let fieldNote = "The web is settling before she arrives.";
 let activityDeadline = 7;
@@ -335,6 +336,7 @@ let mothWillCache = false;
 let mothWasCached = false;
 let mothCacheAtProgress = 0.42;
 let mothFeedingNote = 0;
+let mothNoticeSeconds = 1.1;
 let nextWildPreyAt = 38 + Math.random() * 34;
 let freshSilk: THREE.Line | null = null;
 let freshSilkPoints: THREE.Vector3[] = [];
@@ -420,7 +422,7 @@ function dominantInstinct(): Instinct {
   if (petMode === "repairing") return "repair";
   if (petMode === "listening" || habitatTime - lastUserAction < 9) return "listen";
   if (petMode === "grooming" || memory.hunger < 24) return "groom";
-  if (!isNight && memory.bond < 45) return "shelter";
+  if (!isNight && cautionOf(memory, temperament, hour) > 0.55) return "shelter";
   return isNight ? "explore" : "shelter";
 }
 
@@ -437,14 +439,14 @@ function renderSilkMemory(): void {
 }
 
 function reconcileTimeAway(): void {
-  if (previousVisit <= 0) return;
-  const hoursAway = Math.max(0, (nowAtLoad - previousVisit) / 3_600_000);
+  // The loader already resolved hunger, stress, and location decay. All that
+  // remains is at most one observable memory of the hours alone.
   if (hoursAway < 1.5) return;
 
   if (hoursAway > 30) {
     awayMemory = "She rebuilt the quietest line while the room belonged to her.";
   } else if (memory.hunger >= 68) {
-    awayMemory = "She hunted the outer silk, but kept listening for your signal.";
+    awayMemory = "She hunted the outer silk and waited beside the gumfoot lines.";
   } else if (new Date().getHours() >= 7 && new Date().getHours() < 19) {
     awayMemory = "She returned to shadow before the room brightened.";
   } else {
@@ -509,12 +511,7 @@ function updateFreshSilk(dt: number): void {
 }
 
 function saveMemory(): void {
-  memory.lastVisit = Date.now();
-  try {
-    localStorage.setItem(MEMORY_KEY, JSON.stringify(memory));
-  } catch {
-    // A private browsing policy may block storage. The pet still works for this visit.
-  }
+  saveVesperState(localStorage, memory);
 }
 
 reconcileTimeAway();
@@ -534,28 +531,11 @@ function setPetMode(mode: PetMode, note: string, activity: string): void {
   activityLabel.textContent = activity;
 }
 
-function bondWord(value: number): string {
-  if (value >= 82) return "devoted";
-  if (value >= 58) return "familiar";
-  if (value >= 32) return "curious";
-  if (value >= 16) return "aware";
-  return "new";
-}
-
 function hungerWord(value: number): string {
   if (value >= 82) return "ravenous";
   if (value >= 58) return "hunting";
   if (value >= 28) return "patient";
   return "sated";
-}
-
-function describeMemory(): string {
-  if (memory.visits <= 1) return "She has not met you yet. Move gently.";
-  const away = previousVisit > 0 ? (nowAtLoad - previousVisit) / 3_600_000 : 0;
-  if (away < 1) return `She noticed you came back. Visit ${memory.visits}.`;
-  if (away < 24) return `She remembers you from earlier. Visit ${memory.visits}.`;
-  const days = Math.max(1, Math.floor(away / 24));
-  return `She remembers your signal after ${days} ${days === 1 ? "day" : "days"}.`;
 }
 
 function updateHud(): void {
@@ -565,11 +545,8 @@ function updateHud(): void {
   document.title = `${memory.name} · Autonomous Black Widow`;
   stateLabel.textContent = visibleMode.toUpperCase();
   status.textContent = fieldNote;
-  bondMeter.style.width = `${memory.bond}%`;
-  bondLabel.textContent = bondWord(memory.bond);
   hungerMeter.style.width = `${memory.hunger}%`;
   hungerLabel.textContent = hungerWord(memory.hunger);
-  memoryLine.textContent = describeMemory();
   const minutes = Math.floor(habitatTime / 60).toString().padStart(2, "0");
   const seconds = Math.floor(habitatTime % 60).toString().padStart(2, "0");
   clock.textContent = `${minutes}:${seconds}`;
@@ -710,6 +687,18 @@ function offerMoth(source: "keeper" | "wild" = "keeper"): void {
   mothWasCached = false;
   mothCacheAtProgress = 0.3 + Math.random() * 0.28;
   mothFeedingNote = 0;
+  // Prey instinct owns the hunt; the relationship only shades how long she
+  // reads the vibration before committing. A hungry, food-driven, settled
+  // spider starts sooner; a stressed or wary one listens longer.
+  mothNoticeSeconds = THREE.MathUtils.clamp(
+    1.4 -
+      temperament.foodMotivation * 0.6 -
+      memory.hunger / 250 -
+      memory.familiarity * 0.3 +
+      memory.stress * 0.9,
+    0.45,
+    2.6,
+  );
   if (source === "keeper") lastUserAction = habitatTime;
   setPetMode(
     "listening",
@@ -837,6 +826,7 @@ function positionMothAtMouth(stage: MothStage, wrapAmount: number): void {
 function finishMothMeal(): void {
   if (!moth || !choreographer) return;
   const caughtWildPrey = mothSource === "wild";
+  const finishedAddress = mothAddress;
   removeMoth();
   mothStage = "none";
   mothMealProgress = 1;
@@ -844,8 +834,12 @@ function finishMothMeal(): void {
   if (caughtWildPrey) {
     rememberAutonomousAct("Caught a wild gnat by reading its tremor through the silk.");
   } else {
-    memory.bond = Math.min(100, memory.bond + 7);
-    memory.feedings += 1;
+    // The completed meal is the meaningful event — offering one is not.
+    recordKeeperMealCompleted(memory, sessionBudget);
+    if (finishedAddress) {
+      recordLocationEvent(memory, finishedAddress.strandId, finishedAddress.t, "catch", Date.now());
+    }
+    debugMind("keeper meal completed");
   }
   saveMemory();
   choreographer.setIntent({ kind: "rest" });
@@ -861,7 +855,7 @@ function finishMothMeal(): void {
   announce(
     caughtWildPrey
       ? `${memory.name} made her own luck`
-      : `${memory.name} finished your moth · familiarity increased`,
+      : `${memory.name} finished the moth down to the wing hinges`,
   );
 }
 
@@ -1059,12 +1053,26 @@ async function boot(): Promise<void> {
   traversal.getWorldPosition({ strandId: web.homeStrandId, t: 0.5 }, homeWorldPosition);
   setPetMode(
     "watching",
-    awayMemory || (memory.visits > 1
-      ? `${memory.name} is still. The web says she knows this visitor.`
-      : `${memory.name} tests the air and waits to learn your signal.`),
+    awayMemory || `${memory.name} hangs motionless, reading the room through the silk.`,
     awayMemory ? "remembering the hours alone" : "reading the room",
   );
-  memory.bond = Math.min(100, memory.bond + (memory.visits > 1 ? 0.6 : 0));
+
+  // After a real absence she may, once settled, briefly face a stretch of
+  // silk she has history with — then get on with her day. Long cooldown, no
+  // announcement: either the keeper notices, or they don't.
+  if (
+    hoursAway >= 10 &&
+    memory.familiarity >= 0.3 &&
+    (memory.behaviorCooldowns.returnGlance ?? 0) <= nowAtLoad
+  ) {
+    const spot = pickLocation(memory, "touched") ?? pickLocation(memory, "calmSpot");
+    if (spot) {
+      returnGlance = { strandId: spot.strandId, t: spot.t };
+      memory.behaviorCooldowns.returnGlance = nowAtLoad + 20 * 3_600_000;
+      debugMind("return glance armed", spot);
+    }
+  }
+
   saveMemory();
   updateHud();
 }
@@ -1113,6 +1121,29 @@ if (import.meta.env.DEV) {
     webSense: () => ({
       disturbance: Number(webDisturbance.toFixed(3)),
       respondsAfter: Number((nextTouchResponseAt - habitatTime).toFixed(1)),
+      recentEnergy: Number(recentGestureEnergy.toFixed(2)),
+    }),
+    mind: () => ({
+      familiarity: Number(memory.familiarity.toFixed(4)),
+      trust: Number(memory.trust.toFixed(4)),
+      stress: Number(memory.stress.toFixed(4)),
+      curiosity: Number(curiosityOf(memory, temperament).toFixed(3)),
+      caution: Number(cautionOf(memory, temperament, new Date().getHours()).toFixed(3)),
+      temperament,
+      visitDays: memory.visitDays,
+      locations: memory.locations.map((l) => ({
+        strandId: l.strandId,
+        t: Number(l.t.toFixed(2)),
+        gentle: Number(l.gentle.toFixed(2)),
+        disruptive: Number(l.disruptive.toFixed(2)),
+        catches: Number(l.catches.toFixed(2)),
+        calm: Number(l.calm.toFixed(2)),
+      })),
+      budget: { ...sessionBudget },
+      gainsToday: {
+        familiarity: Number(memory.familiarityGainToday.toFixed(4)),
+        trust: Number(memory.trustGainToday.toFixed(4)),
+      },
     }),
     /** Frames the spider so a screenshot actually shows her. */
     look: (distance = 1.6, azimuth = 0.7, elevation = 0.35) => {
@@ -1271,7 +1302,9 @@ let tapCandidate: TapCandidate | null = null;
 // --- Touching the web ----------------------------------------------------------
 // With the camera following her, drags are free — so a drag becomes a finger
 // laid against the silk. Each brush displaces a small neighbourhood of
-// particles and leaves a trace she can feel.
+// particles; the whole drag is aggregated into ONE gesture and only that
+// finished gesture is recorded against her memory — pointer movement itself
+// earns nothing.
 
 interface WebTouch {
   pointerId: number;
@@ -1280,11 +1313,40 @@ interface WebTouch {
   lastImpulseAt: number;
 }
 
+/** Maps every physics particle back to a semantic strand address. */
+const particleAddresses = new Map<number, { strandId: string; t: number }>();
+for (const strand of web.network.strandList) {
+  const lastIndex = strand.particleIndices.length - 1;
+  for (let i = 0; i <= lastIndex; i += 1) {
+    particleAddresses.set(strand.particleIndices[i], {
+      strandId: strand.id,
+      t: lastIndex > 0 ? i / lastIndex : 0.5,
+    });
+  }
+}
+
+interface ActiveGesture {
+  energy: number;
+  startedAt: number;
+  brushes: number;
+  /** The strand address most recently brushed — the gesture's location. */
+  strandId: string | null;
+  t: number;
+}
+
 let webTouch: WebTouch | null = null;
+let activeGesture: ActiveGesture | null = null;
+/** Gesture energy over the last ~30 s, for spotting sustained disruption. */
+let recentGestureEnergy = 0;
+/** Completed gestures over the last ~30 s. */
+let recentGestureCount = 0;
 /** Decaying sum of recent brush energy — what her feet actually read. */
 let webDisturbance = 0;
 const webDisturbancePoint = new THREE.Vector3();
+let webDisturbanceStrandId: string | null = null;
 let nextTouchResponseAt = 0;
+/** Set when she answers a disturbance; a quiet follow-up earns calm credit. */
+let pendingCalmResponseAt = 0;
 const brushDirection = new THREE.Vector3();
 const brushBasisX = new THREE.Vector3();
 const brushBasisY = new THREE.Vector3();
@@ -1329,16 +1391,71 @@ function brushSilk(pick: SilkPick, dx: number, dy: number): void {
 
   webDisturbance = Math.min(3, webDisturbance + strength * 0.55);
   webDisturbancePoint.copy(pick.world);
+
+  const address = particleAddresses.get(pick.particle) ?? null;
+  webDisturbanceStrandId = address?.strandId ?? null;
+  if (activeGesture) {
+    activeGesture.energy += strength;
+    activeGesture.brushes += 1;
+    if (address) {
+      activeGesture.strandId = address.strandId;
+      activeGesture.t = address.t;
+    }
+  }
+}
+
+/** Closes the running gesture and records it as one meaningful event. */
+function finishGesture(): void {
+  const gesture = activeGesture;
+  activeGesture = null;
+  if (!gesture || gesture.brushes < 2 || gesture.energy < 0.2) return;
+
+  const duration = habitatTime - gesture.startedAt;
+  const kind: GestureKind = classifyGesture(gesture.energy, duration, recentGestureEnergy);
+  recentGestureEnergy = Math.min(20, recentGestureEnergy + gesture.energy);
+  recentGestureCount = Math.min(10, recentGestureCount + 1);
+
+  recordGesture(memory, sessionBudget, kind, gesture.energy);
+  if (gesture.strandId) {
+    recordLocationEvent(
+      memory,
+      gesture.strandId,
+      gesture.t,
+      kind === "disruptive" ? "disruptive" : "gentle",
+      Date.now(),
+      kind === "moderate" ? 0.5 : 1,
+    );
+  }
+  // A forceful gesture right after she answered cancels the calm credit.
+  if (kind === "disruptive") pendingCalmResponseAt = 0;
+  debugMind(`gesture ${kind}`, {
+    energy: +gesture.energy.toFixed(2),
+    duration: +duration.toFixed(1),
+    recentEnergy: +recentGestureEnergy.toFixed(2),
+  });
+  saveMemory();
 }
 
 /**
  * Her side of the exchange. Disturbance decays on its own; if enough of it
- * accumulates while she is free, she may answer — usually just by turning
- * toward the source, sometimes by walking over to inspect it. Cooldowns and
- * familiarity keep it from becoming a vending machine.
+ * accumulates while she is free, the hidden state weighs an answer: ignore,
+ * freeze, attend, approach, or retreat. Nothing here interrupts feeding,
+ * stalking, or a retreat already underway, and nothing is guaranteed — the
+ * same touch on different days can earn a different spider.
  */
 function updateWebSense(dt: number): void {
   webDisturbance = Math.max(0, webDisturbance - dt * (0.35 + webDisturbance * 0.12));
+  recentGestureEnergy = Math.max(0, recentGestureEnergy - dt * 0.4);
+  recentGestureCount = Math.max(0, recentGestureCount - dt / 12);
+  tickStress(memory, dt);
+
+  // She answered earlier and nothing forceful followed: that quiet is trust.
+  if (pendingCalmResponseAt > 0 && habitatTime - pendingCalmResponseAt > 18) {
+    pendingCalmResponseAt = 0;
+    recordCalmResponse(memory, sessionBudget);
+    debugMind("calm response credited");
+  }
+
   if (!choreographer || webDisturbance < 0.85 || habitatTime < nextTouchResponseAt) return;
 
   const free =
@@ -1350,37 +1467,71 @@ function updateWebSense(dt: number): void {
       petMode === "wandering");
   if (!free) return;
 
-  // She is not obliged to care. Familiar keepers get answered more often.
-  if (Math.random() > 0.3 + memory.bond / 250 + webDisturbance * 0.1) {
-    nextTouchResponseAt = habitatTime + 6 + Math.random() * 8;
-    webDisturbance *= 0.5;
-    return;
-  }
-
   if (loadedRig) loadedRig.rootObject.getWorldPosition(petWorldPosition);
   const distance = loadedRig ? petWorldPosition.distanceTo(webDisturbancePoint) : Infinity;
-  const investigates = distance < 7 && Math.random() < 0.45 + memory.hunger / 300;
+  const liveGestureKind: GestureKind =
+    recentGestureEnergy > 8 ? "disruptive" : recentGestureEnergy > 3.5 ? "moderate" : "gentle";
 
-  if (investigates) {
-    choreographer.setIntent({
-      kind: "travel",
-      to: { kind: "world", position: webDisturbancePoint.clone(), maximumSnapDistance: 0.9 },
-      urgency: 0.8,
-    });
-    setPetMode(
-      "wandering",
-      `${memory.name} follows your touch back to the strand it moved.`,
-      "investigating your touch",
-    );
-  } else {
-    choreographer.setIntent({ kind: "attend", at: webDisturbancePoint });
-    setPetMode(
-      "listening",
-      `${memory.name} reads the brush of your finger through eight feet.`,
-      "feeling your touch",
-    );
+  const decision = chooseTouchResponse(
+    memory,
+    temperament,
+    {
+      gesture: liveGestureKind,
+      distance,
+      recentGestures: Math.ceil(recentGestureCount),
+      placeStress: disruptionNear(memory, webDisturbanceStrandId),
+      hunger: memory.hunger,
+      hourOfDay: new Date().getHours(),
+    },
+    Math.random(),
+  );
+  debugMind(`touch response: ${decision.response}`, decision.weights);
+
+  switch (decision.response) {
+    case "ignore":
+      // Not obliged to care. A short refractory gap, then the silk settles.
+      nextTouchResponseAt = habitatTime + 5 + Math.random() * 7;
+      webDisturbance *= 0.5;
+      return;
+    case "freeze":
+      choreographer.setIntent({ kind: "freeze" });
+      setPetMode(
+        "listening",
+        `${memory.name} flattens against the silk and waits for the strand to settle.`,
+        "holding perfectly still",
+      );
+      break;
+    case "attend":
+      choreographer.setIntent({ kind: "attend", at: webDisturbancePoint });
+      setPetMode(
+        "listening",
+        `${memory.name} turns by degrees toward the strand that moved.`,
+        "reading the vibration",
+      );
+      break;
+    case "approach":
+      choreographer.setIntent({
+        kind: "travel",
+        to: { kind: "world", position: webDisturbancePoint.clone(), maximumSnapDistance: 0.9 },
+        urgency: 0.75,
+      });
+      setPetMode(
+        "wandering",
+        `${memory.name} crosses toward the strand that moved, one careful line at a time.`,
+        "investigating the disturbance",
+      );
+      break;
+    case "retreat":
+      choreographer.setIntent({ kind: "retreat", to: { kind: "node", nodeId: web.retreatNodeId } });
+      setPetMode(
+        "retreating",
+        `${memory.name} withdraws to the high corner and goes still.`,
+        "withdrawing",
+      );
+      break;
   }
-  memory.bond = Math.min(100, memory.bond + 0.25);
+
+  if (decision.response !== "retreat") pendingCalmResponseAt = habitatTime;
   webDisturbance = 0;
   nextTouchResponseAt = habitatTime + 16 + Math.random() * 26;
 }
@@ -1394,7 +1545,6 @@ function suggestDestination(event: PointerEvent): void {
     to: { kind: "world", position: target, maximumSnapDistance: 0.5 },
   });
   lastUserAction = habitatTime;
-  memory.bond = Math.min(100, memory.bond + 0.12);
   setPetMode("wandering", `${memory.name} accepts the suggestion, but chooses every step herself.`, "following your signal");
   reticle.style.left = `${event.clientX}px`;
   reticle.style.top = `${event.clientY}px`;
@@ -1420,6 +1570,7 @@ canvas.addEventListener("pointerdown", (event) => {
       y: event.clientY,
       lastImpulseAt: 0,
     };
+    activeGesture = { energy: 0, startedAt: habitatTime, brushes: 0, strandId: null, t: 0.5 };
   }
 });
 
@@ -1449,7 +1600,10 @@ canvas.addEventListener("pointermove", (event) => {
 });
 
 canvas.addEventListener("pointerup", (event) => {
-  if (webTouch && webTouch.pointerId === event.pointerId) webTouch = null;
+  if (webTouch && webTouch.pointerId === event.pointerId) {
+    webTouch = null;
+    finishGesture();
+  }
   if (!tapCandidate || tapCandidate.pointerId !== event.pointerId) return;
   const candidate = tapCandidate;
   tapCandidate = null;
@@ -1460,6 +1614,7 @@ canvas.addEventListener("pointerup", (event) => {
 canvas.addEventListener("pointercancel", () => {
   tapCandidate = null;
   webTouch = null;
+  finishGesture();
 });
 
 function retreat(): void {
@@ -1470,14 +1625,31 @@ function retreat(): void {
   announce("She goes home without needing to be shown the way");
 }
 
+let lastSignalAt = -999;
+let signalBurst = 0;
+
 function signalOnWeb(): void {
   if (!choreographer) return;
   pluckSilk(1.55);
+  const sinceLast = habitatTime - lastSignalAt;
+  lastSignalAt = habitatTime;
   lastUserAction = habitatTime;
-  memory.bond = Math.min(100, memory.bond + 0.45);
-  setPetMode("listening", `${memory.name} turns toward the signature of your touch.`, "recognizing your tremor");
-  announce(memory.bond > 45 ? "She knows that vibration now" : "She felt you through every foot");
-  saveMemory();
+
+  // One unhurried pluck is a signal; a drumroll of them is a disturbance.
+  // Neither the button nor the pointer can farm anything by repetition.
+  signalBurst = Math.max(0, signalBurst - sinceLast / 25) + 1;
+  if (sinceLast >= 90) {
+    recordGesture(memory, sessionBudget, "gentle", 0.6);
+    saveMemory();
+  } else if (signalBurst >= 4) {
+    signalBurst = 0;
+    recordGesture(memory, sessionBudget, "disruptive", 3);
+    debugMind("signal spam registered as disruptive");
+    saveMemory();
+  }
+
+  setPetMode("listening", `${memory.name} turns toward the pluck and holds the line taut.`, "reading your tremor");
+  announce("The pluck runs down every anchor line");
 }
 
 function toggleFollow(button: HTMLButtonElement): void {
@@ -1595,7 +1767,7 @@ function updateMoth(dt: number): void {
     nextMothTremor = 0.7 + Math.random() * 1.5;
   }
 
-  if (mothStage === "noticed" && mothTimer > 1.1 * feedingTimeScale) {
+  if (mothStage === "noticed" && mothTimer > mothNoticeSeconds * feedingTimeScale) {
     mothStage = "hunting";
     mothTimer = 0;
     choreographer.setIntent({
@@ -1724,6 +1896,24 @@ function updateMoth(dt: number): void {
   }
 }
 
+/** One-shot after-absence glance toward remembered silk, armed at boot. */
+let returnGlance: { strandId: string; t: number } | null = null;
+/** Set when a travel should end in rest rather than watchful sampling. */
+let arrivalRest = false;
+const rememberedSpotPosition = new THREE.Vector3();
+
+/** Routes a location memory through the normal travel intent. */
+function travelToRememberedSpot(spot: { strandId: string; t: number }, urgency: number): boolean {
+  if (!choreographer || !web.network.strands.has(spot.strandId)) return false;
+  traversal.getWorldPosition(spot, rememberedSpotPosition);
+  choreographer.setIntent({
+    kind: "travel",
+    to: { kind: "world", position: rememberedSpotPosition.clone(), maximumSnapDistance: 1.2 },
+    urgency,
+  });
+  return true;
+}
+
 function updateAutonomy(dt: number): void {
   if (!choreographer) return;
   memory.hunger = Math.min(100, memory.hunger + dt * 0.004);
@@ -1735,15 +1925,24 @@ function updateAutonomy(dt: number): void {
     if (arrivedFromRepair) finishSilkRepair();
     choreographer.setIntent({ kind: "rest" });
     const arrivedFromRetreat = petMode === "retreating";
+    const restHere = arrivalRest;
+    arrivalRest = false;
     setPetMode(
-      arrivedFromRepair ? "grooming" : arrivedFromRetreat ? "resting" : "watching",
+      arrivedFromRepair ? "grooming" : arrivedFromRetreat || restHere ? "resting" : "watching",
       arrivedFromRepair
         ? `${memory.name} tests the new line with one deliberate foot.`
         : arrivedFromRetreat
         ? `${memory.name} folds herself into the knot she trusts most.`
+        : restHere
+        ? `${memory.name} settles her weight and lets the strand stop swaying.`
         : `${memory.name} stops because the web has changed beneath her.`,
-      arrivedFromRepair ? "inspecting fresh silk" : arrivedFromRetreat ? "safe in her retreat" : "sampling the silk",
+      arrivedFromRepair ? "inspecting fresh silk" : arrivedFromRetreat ? "safe in her retreat" : restHere ? "settled mid-web" : "sampling the silk",
     );
+    // Where she chooses to stop is itself a memory, occasionally.
+    const bodyAddress = choreographer.bodyAddress;
+    if (bodyAddress && habitatTime - lastUserAction > 20 && Math.random() < 0.5) {
+      recordLocationEvent(memory, bodyAddress.strandId, bodyAddress.t, "calm", Date.now(), 0.5);
+    }
     activityDeadline = habitatTime + 8 + Math.random() * 12;
     return;
   }
@@ -1767,35 +1966,106 @@ function updateAutonomy(dt: number): void {
     return;
   }
 
-  const choice = Math.random();
-  const instinct = dominantInstinct();
-  const repairChance = instinct === "explore" ? 0.28 : 0.14;
-  const shelterChance = instinct === "shelter" ? 0.48 : 0.2;
-  if (choice < repairChance) {
-    choreographer.setIntent({ kind: "travel", to: { kind: "node", nodeId: web.farNodeId }, urgency: 0.42 });
-    beginSilkRepair();
-    setPetMode("repairing", `${memory.name} pays out a line where the web feels too open.`, "reinforcing the web");
-  } else if (choice < repairChance + 0.3) {
-    choreographer.setIntent({ kind: "travel", to: { kind: "node", nodeId: web.farNodeId }, urgency: 0.55 });
-    setPetMode("wandering", `${memory.name} begins a patrol no one asked for.`, "checking the far anchors");
-    rememberAutonomousAct("Patrolled the far anchors without being asked.");
-  } else if (choice < repairChance + 0.3 + shelterChance) {
-    choreographer.setIntent({ kind: "retreat", to: { kind: "node", nodeId: web.retreatNodeId } });
-    setPetMode("retreating", `${memory.name} decides the open web has seen enough of her.`, "returning to shadow");
-    rememberAutonomousAct("Chose the retreat when the room felt too exposed.");
-  } else if (instinct === "groom" || choice < 0.9) {
-    choreographer.setIntent({ kind: "freeze" });
-    setPetMode(
-      instinct === "groom" ? "grooming" : "listening",
-      instinct === "groom"
-        ? `${memory.name} draws each leg through her chelicerae, one by one.`
-        : `${memory.name} stills every joint. Something moved beyond the glass.`,
-      instinct === "groom" ? "grooming all eight legs" : "listening through silk",
-    );
-    rememberAutonomousAct(instinct === "groom" ? "Stopped to groom all eight legs." : "Stilled herself to read the room through silk.");
-  } else {
-    choreographer.setIntent({ kind: "rest" });
-    setPetMode("resting", `${memory.name} does nothing at all, with great intention.`, "breathing beneath the web");
+  // Once settled after a long absence: one silent look toward remembered silk.
+  if (returnGlance && habitatTime > 9) {
+    const spot = returnGlance;
+    returnGlance = null;
+    if (web.network.strands.has(spot.strandId)) {
+      traversal.getWorldPosition(spot, rememberedSpotPosition);
+      choreographer.setIntent({ kind: "attend", at: rememberedSpotPosition });
+      setPetMode(
+        "watching",
+        `${memory.name} pauses, facing a stretch of silk as if she expects it to move.`,
+        "watching one strand",
+      );
+      activityDeadline = habitatTime + 7 + Math.random() * 5;
+      return;
+    }
+  }
+
+  const hour = new Date().getHours();
+  const decision = chooseAutonomousBehavior(
+    memory,
+    temperament,
+    {
+      hunger: memory.hunger,
+      hourOfDay: hour,
+      isNight: hour >= 19 || hour < 6,
+      secondsSinceUserAction: habitatTime - lastUserAction,
+      hasTouchedSpot: pickLocation(memory, "touched") !== null,
+      hasCalmSpot: pickLocation(memory, "calmSpot") !== null,
+      hasCatchSpot: pickLocation(memory, "catchSpot") !== null,
+    },
+    Date.now(),
+    Math.random(),
+  );
+  noteBehaviorTaken(memory, decision.id, Date.now());
+  debugMind(`autonomy: ${decision.id}`, decision.weights);
+
+  switch (decision.id) {
+    case "repair":
+      choreographer.setIntent({ kind: "travel", to: { kind: "node", nodeId: web.farNodeId }, urgency: 0.42 });
+      beginSilkRepair();
+      setPetMode("repairing", `${memory.name} pays out a line where the web feels too open.`, "reinforcing the web");
+      break;
+    case "patrol":
+      choreographer.setIntent({ kind: "travel", to: { kind: "node", nodeId: web.farNodeId }, urgency: 0.55 });
+      setPetMode("wandering", `${memory.name} begins a patrol no one asked for.`, "checking the far anchors");
+      rememberAutonomousAct("Patrolled the far anchors without being asked.");
+      break;
+    case "shelter":
+      choreographer.setIntent({ kind: "retreat", to: { kind: "node", nodeId: web.retreatNodeId } });
+      setPetMode("retreating", `${memory.name} decides the open web has seen enough of her.`, "returning to shadow");
+      rememberAutonomousAct("Chose the retreat when the room felt too exposed.");
+      break;
+    case "groom":
+      choreographer.setIntent({ kind: "freeze" });
+      setPetMode("grooming", `${memory.name} draws each leg through her chelicerae, one by one.`, "grooming all eight legs");
+      rememberAutonomousAct("Stopped to groom all eight legs.");
+      break;
+    case "listen":
+      choreographer.setIntent({ kind: "freeze" });
+      setPetMode("listening", `${memory.name} stills every joint. Something moved beyond the glass.`, "listening through silk");
+      rememberAutonomousAct("Stilled herself to read the room through silk.");
+      break;
+    case "visitTouched": {
+      const spot = pickLocation(memory, "touched");
+      if (spot && travelToRememberedSpot(spot, 0.6)) {
+        setPetMode("wandering", `${memory.name} crosses to a stretch of silk and tests it, foot by foot.`, "walking a particular line");
+        rememberAutonomousAct("Went back to one strand and walked it end to end.");
+      } else {
+        choreographer.setIntent({ kind: "rest" });
+        setPetMode("resting", `${memory.name} does nothing at all, with great intention.`, "breathing beneath the web");
+      }
+      break;
+    }
+    case "restFamiliar": {
+      const spot = pickLocation(memory, "calmSpot");
+      if (spot && travelToRememberedSpot(spot, 0.4)) {
+        arrivalRest = true;
+        setPetMode("wandering", `${memory.name} moves off with somewhere clearly in mind.`, "crossing the web");
+        rememberAutonomousAct("Settled at the same mid-web junction as before.");
+      } else {
+        choreographer.setIntent({ kind: "rest" });
+        setPetMode("resting", `${memory.name} does nothing at all, with great intention.`, "breathing beneath the web");
+      }
+      break;
+    }
+    case "inspectCatch": {
+      const spot = pickLocation(memory, "catchSpot");
+      if (spot && travelToRememberedSpot(spot, 0.55)) {
+        setPetMode("wandering", `${memory.name} detours mid-patrol and pauses where the silk is roughened.`, "retracing a line");
+        rememberAutonomousAct("Paused on patrol where the silk still carries old wrap marks.");
+      } else {
+        choreographer.setIntent({ kind: "rest" });
+        setPetMode("resting", `${memory.name} does nothing at all, with great intention.`, "breathing beneath the web");
+      }
+      break;
+    }
+    default:
+      choreographer.setIntent({ kind: "rest" });
+      setPetMode("resting", `${memory.name} does nothing at all, with great intention.`, "breathing beneath the web");
+      break;
   }
   activityDeadline = habitatTime + 12 + Math.random() * 20;
 }

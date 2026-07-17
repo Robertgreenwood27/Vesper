@@ -264,7 +264,6 @@ a:focus-visible {
 
 .kicker,
 .species,
-.memory,
 .pet-card h1 {
   margin: 0;
 }
@@ -397,12 +396,6 @@ a:focus-visible {
 }
 
 .meter.warm i { background: var(--blood); }
-
-.memory {
-  margin-top: 18px;
-  color: #575650;
-  font: italic 400 13px/1.5 "Cormorant Garamond", serif;
-}
 
 .instinct-readout {
   display: flex;
@@ -709,7 +702,7 @@ a:focus-visible {
   .pet-card { top: calc(max(18px, env(safe-area-inset-top)) + 82px); left: max(22px, env(safe-area-inset-left)); width: 275px; transform: none; }
   .pet-card h1 { font-size: 58px; }
   .mood-line { margin-top: 22px; }
-  .vitals, .memory, .species { display: none; }
+  .vitals, .species { display: none; }
   .instinct-readout { margin-top: 13px; padding-top: 10px; }
   .observation {
     top: auto;
@@ -799,7 +792,6 @@ a:focus-visible {
   .kicker { display: none; }
   .species,
   .vitals,
-  .memory { display: none; }
   .pet-card h1 { font-size: 43px; }
   .mood-line { margin-top: 10px; }
   .instinct-readout { margin-top: 8px; padding-top: 8px; }

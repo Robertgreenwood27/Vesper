@@ -49,13 +49,14 @@ Phone controls:
 Her own footfalls press into the silk as she walks, each landing ringing
 briefly through the nearby web.
 
-Her name, appetite, familiarity, visits, and feedings are stored locally in the
-browser.
+Her name, appetite, feedings, and a quiet history of how you treat her web are
+stored locally in the browser. Nothing about that history is displayed — it
+shows up only in how she behaves, and only slowly, across many calm visits.
 
 ## Autonomous life
 
 Vesper does not wait for input. Her dominant instinct shifts with appetite,
-familiarity, recent contact, and the local time of day. Left alone, she patrols
+temperament, recent contact, and the local time of day. Left alone, she patrols
 anchors, seeks shadow, listens through the silk, grooms, repairs the open web,
 and can hunt wild gnats that blunder into it. Fresh safety lines remain visible
 for a while before fading into the older web.
