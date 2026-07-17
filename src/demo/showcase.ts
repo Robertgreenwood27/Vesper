@@ -5,7 +5,8 @@ import { WebPhysicsSolver } from "../physics/WebPhysicsSolver";
 import { SpiderChoreographer } from "../spider/choreography/index";
 import { loadSpiderRig } from "../spider/SpiderRigLoader";
 import { createWebNetworkTraversal } from "../traversal/index";
-import { createCobweb } from "../web/createCobweb";
+import { createCobweb, DEFAULT_LEGSPAN } from "../web/createCobweb";
+import { createEnclosureLayout } from "../web/enclosureLayout";
 import { DewSystem, Firefly } from "./Atmosphere";
 import { RigDiagnostics } from "./RigDiagnostics";
 import { SilkRenderer } from "./SilkRenderer";
@@ -127,7 +128,243 @@ warmFill.position.copy(cornerLamp.position);
 warmFill.target = warmWashTarget;
 scene.add(warmFill);
 
-function buildRoom(): void {
+const enclosure = createEnclosureLayout(DEFAULT_LEGSPAN);
+
+/** Deterministic 0..1 hash of a position, for jitter that never cracks a seam. */
+function positionHash(x: number, y: number, z: number): number {
+  const s = Math.sin(x * 12.9898 + y * 78.233 + z * 37.719) * 43758.5453;
+  return s - Math.floor(s);
+}
+
+/**
+ * Local substrate relief, in enclosure-centered coordinates. Shared between the
+ * soil mesh and everything that has to sit on it — pebbles, rocks, stick bases
+ * — so nothing floats and nothing drowns.
+ */
+function substrateHeight(localX: number, localZ: number): number {
+  const radial = Math.hypot(localX, localZ);
+  // Substrate banks up slightly where it was poured against the glass.
+  const bank = THREE.MathUtils.smoothstep(radial, enclosure.radius * 0.7, enclosure.radius) * 0.2;
+  return (
+    0.11 * Math.sin(localX * 0.9 + 1.7) * Math.sin(localZ * 1.1 + 0.4) +
+    0.05 * Math.sin(localX * 2.6) * Math.sin(localZ * 3.1 + 2) +
+    bank -
+    0.05
+  );
+}
+
+function buildSubstrate(): void {
+  const segments = mobileExperience ? 36 : 60;
+  const geometry = new THREE.PlaneGeometry(
+    enclosure.radius * 2,
+    enclosure.radius * 2,
+    segments,
+    segments,
+  );
+  geometry.rotateX(-Math.PI / 2);
+  const positions = geometry.attributes.position as THREE.BufferAttribute;
+  const colors = new Float32Array(positions.count * 3);
+  const soil = new THREE.Color(0x120e09);
+  const litter = new THREE.Color(0x2b2013);
+  const blend = new THREE.Color();
+
+  for (let i = 0; i < positions.count; i += 1) {
+    let x = positions.getX(i);
+    let z = positions.getZ(i);
+    const radial = Math.hypot(x, z);
+    if (radial > enclosure.radius) {
+      // The square grid gets pressed into a disk: outside vertices collapse to
+      // the rim, which keeps the interior dense enough to hold the relief.
+      const scale = enclosure.radius / radial;
+      x *= scale;
+      z *= scale;
+      positions.setX(i, x);
+      positions.setZ(i, z);
+    }
+    const grain = positionHash(x, 0, z);
+    positions.setY(i, substrateHeight(x, z) + grain * 0.04);
+    blend.copy(soil).lerp(litter, grain * grain * 0.9);
+    colors[i * 3] = blend.r;
+    colors[i * 3 + 1] = blend.g;
+    colors[i * 3 + 2] = blend.b;
+  }
+  geometry.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+  geometry.computeVertexNormals();
+
+  const substrate = new THREE.Mesh(
+    geometry,
+    new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 1, metalness: 0 }),
+  );
+  substrate.position.set(enclosure.centerX, 0, enclosure.centerZ);
+  substrate.receiveShadow = true;
+  scene.add(substrate);
+
+  // Loose bark chips and pebbles pressed into the soil.
+  const pebbleCount = mobileExperience ? 70 : 150;
+  const pebbles = new THREE.InstancedMesh(
+    new THREE.DodecahedronGeometry(1, 0),
+    new THREE.MeshStandardMaterial({ roughness: 0.95, metalness: 0 }),
+    pebbleCount,
+  );
+  const matrix = new THREE.Matrix4();
+  const spot = new THREE.Vector3();
+  const tumble = new THREE.Quaternion();
+  const squash = new THREE.Vector3();
+  const tint = new THREE.Color();
+  for (let i = 0; i < pebbleCount; i += 1) {
+    const angle = Math.random() * Math.PI * 2;
+    const radial = Math.sqrt(Math.random()) * (enclosure.radius - 0.4);
+    const localX = Math.cos(angle) * radial;
+    const localZ = Math.sin(angle) * radial;
+    const size = 0.05 + Math.random() * Math.random() * 0.17;
+    spot.set(
+      enclosure.centerX + localX,
+      substrateHeight(localX, localZ) + size * 0.3,
+      enclosure.centerZ + localZ,
+    );
+    tumble.setFromEuler(
+      new THREE.Euler(Math.random() * Math.PI, Math.random() * Math.PI, Math.random() * Math.PI),
+    );
+    squash.set(size, size * 0.65, size * (0.75 + Math.random() * 0.5));
+    matrix.compose(spot, tumble, squash);
+    pebbles.setMatrixAt(i, matrix);
+    const warmth = Math.random();
+    tint.setRGB(0.12 + warmth * 0.08, 0.1 + warmth * 0.05, 0.08 + warmth * 0.03);
+    pebbles.setColorAt(i, tint);
+  }
+  pebbles.receiveShadow = true;
+  scene.add(pebbles);
+}
+
+function buildStick(spec: (typeof enclosure.sticks)[number]): THREE.Mesh {
+  const base = new THREE.Vector3(...spec.base);
+  const tip = new THREE.Vector3(...spec.tip);
+  const along = tip.clone().sub(base);
+  const length = along.length();
+  // A little extra length below the base sinks the cut end into the substrate.
+  const sink = 0.5;
+  const geometry = new THREE.CylinderGeometry(spec.radius * 0.45, spec.radius, length + sink, 9, 7);
+  geometry.translate(0, (length + sink) / 2 - sink, 0);
+
+  // Wood is never straight: bow the shaft and roughen the surface, with the
+  // jitter keyed to position so shared seam vertices stay welded.
+  const positions = geometry.attributes.position as THREE.BufferAttribute;
+  for (let i = 0; i < positions.count; i += 1) {
+    const y = positions.getY(i);
+    const wave = Math.sin((y / length) * Math.PI) * spec.radius * 0.7;
+    const rough =
+      (positionHash(positions.getX(i), y, positions.getZ(i)) - 0.5) * spec.radius * 0.35;
+    positions.setX(i, positions.getX(i) + wave + rough);
+    positions.setZ(i, positions.getZ(i) + rough * 0.6);
+  }
+  geometry.computeVertexNormals();
+
+  const bark = new THREE.MeshStandardMaterial({ color: 0x27190f, roughness: 0.96, metalness: 0 });
+  const stick = new THREE.Mesh(geometry, bark);
+  stick.position.copy(base);
+  stick.position.y += substrateHeight(base.x - enclosure.centerX, base.z - enclosure.centerZ);
+  stick.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), along.normalize());
+  stick.castShadow = true;
+  stick.receiveShadow = true;
+
+  // Snapped-off twig stubs, so the branch reads as wood rather than dowel.
+  for (const [at, yaw, tilt] of [
+    [0.34, 0.7, 1.05],
+    [0.62, 2.9, 0.85],
+    [0.83, 4.4, 1.2],
+  ] as const) {
+    const reach = 0.5 + spec.radius * 3;
+    const twig = new THREE.Mesh(
+      new THREE.CylinderGeometry(spec.radius * 0.18, spec.radius * 0.34, reach, 6),
+      bark,
+    );
+    twig.position.y = at * length;
+    twig.rotation.set(0, yaw, tilt);
+    twig.translateY(reach / 2);
+    twig.castShadow = true;
+    stick.add(twig);
+  }
+  return stick;
+}
+
+function buildRock(spec: (typeof enclosure.rocks)[number]): THREE.Mesh {
+  const geometry = new THREE.IcosahedronGeometry(spec.radius, 1);
+  const positions = geometry.attributes.position as THREE.BufferAttribute;
+  for (let i = 0; i < positions.count; i += 1) {
+    const x = positions.getX(i);
+    const y = positions.getY(i);
+    const z = positions.getZ(i);
+    // Position-keyed jitter keeps duplicated face vertices welded.
+    const bump = 1 + (positionHash(x, y, z) - 0.5) * 0.38;
+    positions.setXYZ(i, x * bump, Math.max(y * bump * 0.72, -spec.radius * 0.4), z * bump);
+  }
+  geometry.computeVertexNormals();
+
+  const rock = new THREE.Mesh(
+    geometry,
+    new THREE.MeshStandardMaterial({ color: 0x1d1e20, roughness: 0.9, metalness: 0.02 }),
+  );
+  rock.position.set(
+    spec.x,
+    spec.radius * 0.38 + substrateHeight(spec.x - enclosure.centerX, spec.z - enclosure.centerZ),
+    spec.z,
+  );
+  rock.rotation.y = positionHash(spec.x, 0, spec.z) * Math.PI * 2;
+  rock.castShadow = true;
+  rock.receiveShadow = true;
+  return rock;
+}
+
+function buildMeshLid(): THREE.Group {
+  const lid = new THREE.Group();
+  lid.position.set(enclosure.centerX, enclosure.height, enclosure.centerZ);
+
+  // A faint backing keeps the opening legible against the black background,
+  // while the crossed wires make it read as ventilation mesh rather than a
+  // solid ceiling. Each line is clipped analytically to the circular rim.
+  const backing = new THREE.Mesh(
+    new THREE.CircleGeometry(enclosure.radius, 72),
+    new THREE.MeshStandardMaterial({
+      color: 0x090b0b,
+      roughness: 0.9,
+      metalness: 0.08,
+      transparent: true,
+      opacity: 0.42,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    }),
+  );
+  backing.rotation.x = Math.PI / 2;
+  lid.add(backing);
+
+  const spacing = mobileExperience ? 0.42 : 0.3;
+  const wirePositions: number[] = [];
+  for (let offset = -enclosure.radius + spacing; offset < enclosure.radius; offset += spacing) {
+    const halfChord = Math.sqrt(enclosure.radius * enclosure.radius - offset * offset);
+    wirePositions.push(-halfChord, -0.025, offset, halfChord, -0.025, offset);
+    wirePositions.push(offset, -0.025, -halfChord, offset, -0.025, halfChord);
+  }
+  const wireGeometry = new THREE.BufferGeometry();
+  wireGeometry.setAttribute(
+    "position",
+    new THREE.Float32BufferAttribute(wirePositions, 3),
+  );
+  const wire = new THREE.LineSegments(
+    wireGeometry,
+    new THREE.LineBasicMaterial({ color: 0x4a5050, transparent: true, opacity: 0.48 }),
+  );
+  lid.add(wire);
+
+  const innerRim = new THREE.Mesh(
+    new THREE.TorusGeometry(enclosure.radius - 0.08, 0.08, 8, 72),
+    new THREE.MeshStandardMaterial({ color: 0x24282b, roughness: 0.5, metalness: 0.7 }),
+  );
+  innerRim.rotation.x = Math.PI / 2;
+  lid.add(innerRim);
+  return lid;
+}
+
+function buildEnclosure(): void {
   const bulb = new THREE.Mesh(
     new THREE.SphereGeometry(0.09, 12, 8),
     new THREE.MeshStandardMaterial({
@@ -140,45 +377,81 @@ function buildRoom(): void {
   bulb.position.copy(cornerLamp.position);
   scene.add(bulb);
 
-  const roomMaterial = new THREE.MeshStandardMaterial({
-    color: 0x090a09,
-    roughness: 0.94,
-    metalness: 0,
-  });
-  const floor = new THREE.Mesh(new THREE.PlaneGeometry(42, 42), roomMaterial);
-  floor.rotation.x = -Math.PI / 2;
-  floor.position.y = -0.08;
-  floor.receiveShadow = true;
-  scene.add(floor);
+  // The glass wall, rendered inside-out: from outside the cylinder the camera
+  // sees straight through the near side, while the far side reads as the curved
+  // back of the jar catching the lamps.
+  const glassGeometry = new THREE.CylinderGeometry(
+    enclosure.radius,
+    enclosure.radius,
+    enclosure.height,
+    72,
+    1,
+    true,
+  );
+  const glass = new THREE.Mesh(
+    glassGeometry,
+    new THREE.MeshStandardMaterial({
+      color: 0x0a0d0d,
+      roughness: 0.38,
+      metalness: 0.06,
+      side: THREE.BackSide,
+    }),
+  );
+  glass.position.set(enclosure.centerX, enclosure.height / 2, enclosure.centerZ);
+  glass.receiveShadow = true;
+  scene.add(glass);
 
-  const wallMaterial = roomMaterial.clone();
-  wallMaterial.color.setHex(0x070807);
-  const backWall = new THREE.Mesh(new THREE.PlaneGeometry(42, 24), wallMaterial);
-  backWall.position.set(0, 10, -11.55);
-  backWall.receiveShadow = true;
-  scene.add(backWall);
-  const sideWall = new THREE.Mesh(new THREE.PlaneGeometry(42, 24), wallMaterial);
-  sideWall.position.set(-11.55, 10, 0);
-  sideWall.rotation.y = Math.PI / 2;
-  sideWall.receiveShadow = true;
-  scene.add(sideWall);
+  // A subtle near-side sheen catches motion and highlights without hiding the
+  // spider. The opaque BackSide mesh above remains the dark far wall.
+  const nearGlass = new THREE.Mesh(
+    glassGeometry,
+    new THREE.MeshPhysicalMaterial({
+      color: 0xb7c8ca,
+      roughness: 0.16,
+      metalness: 0,
+      transparent: true,
+      opacity: 0.045,
+      depthWrite: false,
+      clearcoat: 1,
+      clearcoatRoughness: 0.2,
+      side: THREE.FrontSide,
+    }),
+  );
+  nearGlass.position.copy(glass.position);
+  nearGlass.renderOrder = 4;
+  scene.add(nearGlass);
 
-  const crateMaterial = new THREE.MeshStandardMaterial({
-    color: 0x17130f,
-    roughness: 0.88,
-  });
-  const crate = new THREE.Mesh(new THREE.BoxGeometry(3.6, 3.55, 3.6), crateMaterial);
-  crate.position.set(5.2, 1.7, 4.25);
-  crate.castShadow = true;
-  crate.receiveShadow = true;
-  scene.add(crate);
+  scene.add(buildMeshLid());
 
+  // Rim bands top and bottom: the silhouette that tells the eye "this is a jar"
+  // even when the glass itself has vanished.
+  for (const y of [0.1, enclosure.height - 0.1]) {
+    const band = new THREE.Mesh(
+      new THREE.CylinderGeometry(enclosure.radius + 0.05, enclosure.radius + 0.05, 0.24, 72, 1, true),
+      new THREE.MeshStandardMaterial({
+        color: 0x14161a,
+        roughness: 0.45,
+        metalness: 0.65,
+        side: THREE.DoubleSide,
+      }),
+    );
+    band.position.set(enclosure.centerX, y, enclosure.centerZ);
+    scene.add(band);
+  }
+
+  buildSubstrate();
+  for (const stick of enclosure.sticks) scene.add(buildStick(stick));
+  for (const rock of enclosure.rocks) scene.add(buildRock(rock));
+
+  // Dust hangs inside the glass, not through it.
   const dustCount = mobileExperience ? 220 : 460;
   const positions = new Float32Array(dustCount * 3);
   for (let i = 0; i < dustCount; i += 1) {
-    positions[i * 3] = THREE.MathUtils.randFloatSpread(25);
-    positions[i * 3 + 1] = Math.random() * 16;
-    positions[i * 3 + 2] = THREE.MathUtils.randFloatSpread(25);
+    const angle = Math.random() * Math.PI * 2;
+    const radial = Math.sqrt(Math.random()) * (enclosure.radius - 0.3);
+    positions[i * 3] = enclosure.centerX + Math.cos(angle) * radial;
+    positions[i * 3 + 1] = 0.3 + Math.random() * (enclosure.height - 0.6);
+    positions[i * 3 + 2] = enclosure.centerZ + Math.sin(angle) * radial;
   }
   const dustGeometry = new THREE.BufferGeometry();
   dustGeometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
@@ -195,7 +468,7 @@ function buildRoom(): void {
   scene.add(dust);
 }
 
-buildRoom();
+buildEnclosure();
 
 // --- Simulation --------------------------------------------------------------
 

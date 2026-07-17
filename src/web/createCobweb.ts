@@ -1,9 +1,10 @@
+import { createEnclosureLayout } from "./enclosureLayout";
 import { WebNetwork } from "./WebNetwork";
 import type { WebNode } from "./WebNode";
 import type { WebStrand } from "./WebStrand";
 
 /**
- * A taut, springy, irregular cobweb strung into the corner of a room.
+ * A taut, springy, irregular cobweb strung through a cylindrical enclosure.
  *
  * This is a *test fixture*, not the game's web builder — but it has to be the
  * right kind of silk, because the wrong kind flatters or breaks the spider for
@@ -191,13 +192,12 @@ export function createCobweb(options: CobwebOptions = {}): Cobweb {
   let strandSerial = 0;
   const nextStrandId = () => `silk-${String(strandSerial++).padStart(3, "0")}`;
 
-  // --- Room, in legspans -----------------------------------------------------
-  // ~14 legspans across. A widow's web is a good fraction of the space it is in,
-  // and she is small in it.
+  // --- Enclosure, in legspans ------------------------------------------------
+  // A cylindrical terrarium ~13 legspans across. A widow's web is a good
+  // fraction of the space it is in, and she is small in it.
+  const enclosure = createEnclosureLayout(LS);
   const FLOOR = 0;
-  const CEILING = 9 * LS;
-  const WALL_X = -7 * LS;
-  const WALL_Z = -7 * LS;
+  const CEILING = enclosure.height;
 
   const anchors: Hub[] = [];
   const tangle: Hub[] = [];
@@ -211,27 +211,73 @@ export function createCobweb(options: CobwebOptions = {}): Cobweb {
     return hub;
   };
 
+  /** Pulls an xz point radially inside the glass, leaving a margin. */
+  const insideGlass = (x: number, z: number, margin: number): [number, number] => {
+    const dx = x - enclosure.centerX;
+    const dz = z - enclosure.centerZ;
+    const r = Math.hypot(dx, dz);
+    const limit = enclosure.radius - margin;
+    if (r <= limit) return [x, z];
+    const scale = limit / r;
+    return [enclosure.centerX + dx * scale, enclosure.centerZ + dz * scale];
+  };
+
   // --- Anchors on real surfaces ---------------------------------------------
-  // Deliberately lopsided. Web geometry follows the room, and rooms are not round.
+  // Deliberately lopsided: the whole web leans toward the retreat side of the
+  // jar, the way a real widow claims one corner of an enclosure.
+
+  // Lid anchors — silk hooked into the mesh above the tangle.
   for (let i = 0; i < 5; i += 1) {
-    addHub("CEILING", rng.range(WALL_X + LS, 3 * LS), CEILING, rng.range(WALL_Z + LS, 3 * LS), true);
+    const [x, z] = insideGlass(rng.range(-6 * LS, 3 * LS), rng.range(-6 * LS, 3 * LS), 0.7 * LS);
+    addHub("LID", x, CEILING, z, true);
   }
-  for (let i = 0; i < 4; i += 1) {
-    addHub("WALL X", WALL_X, rng.range(2.5 * LS, CEILING - LS), rng.range(WALL_Z + LS, 2.5 * LS), true);
-  }
-  for (let i = 0; i < 4; i += 1) {
-    addHub("WALL Z", rng.range(WALL_X + LS, 2 * LS), rng.range(2.5 * LS, CEILING - LS), WALL_Z, true);
-  }
-  // A crate: the sort of object a web actually gets slung between.
-  const crate = { x: 3.2 * LS, z: 2.6 * LS, top: 2.2 * LS, half: 1.1 * LS };
-  for (const [sx, sz] of [[-1, -1], [1, -1], [-1, 1], [1, 1]] as const) {
-    addHub("CRATE", crate.x + sx * crate.half, crate.top, crate.z + sz * crate.half, true);
-  }
-  const floorAnchors: Hub[] = [];
-  for (let i = 0; i < 5; i += 1) {
-    floorAnchors.push(
-      addHub("FLOOR", rng.range(WALL_X + 2 * LS, 4 * LS), FLOOR, rng.range(WALL_Z + 2 * LS, 3.5 * LS), true),
+
+  // Glass anchors — on the curved wall, clustered around the retreat side.
+  // (Silk does hold on clean glass; it just holds better on everything else.)
+  const retreatAzimuth = Math.atan2(-5.5 * LS, -5 * LS);
+  for (let i = 0; i < 7; i += 1) {
+    const theta = retreatAzimuth + rng.range(-0.95, 0.95);
+    addHub(
+      "GLASS",
+      enclosure.centerX + Math.cos(theta) * (enclosure.radius - 0.03),
+      rng.range(2.5 * LS, CEILING - LS),
+      enclosure.centerZ + Math.sin(theta) * (enclosure.radius - 0.03),
+      true,
     );
+  }
+
+  // Stick anchors — the mid-air wood is what a cobweb actually wants. A couple
+  // of holds along each branch, biased toward the upper half.
+  for (const stick of enclosure.sticks) {
+    const holds = stick === enclosure.sticks[0] ? 3 : 2;
+    for (let i = 0; i < holds; i += 1) {
+      const t = rng.range(0.35, 0.95);
+      addHub(
+        "STICK",
+        stick.base[0] + (stick.tip[0] - stick.base[0]) * t,
+        stick.base[1] + (stick.tip[1] - stick.base[1]) * t,
+        stick.base[2] + (stick.tip[2] - stick.base[2]) * t,
+        true,
+      );
+    }
+  }
+
+  // Ground anchors for the gumfoot lines: rock tops and open substrate.
+  const floorAnchors: Hub[] = [];
+  for (const rock of enclosure.rocks.slice(0, 2)) {
+    floorAnchors.push(
+      addHub(
+        "ROCK",
+        rock.x + rng.range(-0.3, 0.3) * rock.radius,
+        rock.radius * 1.1,
+        rock.z + rng.range(-0.3, 0.3) * rock.radius,
+        true,
+      ),
+    );
+  }
+  for (let i = 0; i < 3; i += 1) {
+    const [x, z] = insideGlass(rng.range(-5 * LS, 4 * LS), rng.range(-5 * LS, 3.5 * LS), 1.2 * LS);
+    floorAnchors.push(addHub("SUBSTRATE", x, FLOOR, z, true));
   }
 
   // --- Tangle hubs -----------------------------------------------------------
@@ -250,12 +296,15 @@ export function createCobweb(options: CobwebOptions = {}): Cobweb {
   for (const cluster of CLUSTERS) {
     for (let i = 0; i < cluster.count; i += 1) {
       for (let attempt = 0; attempt < 24; attempt += 1) {
-        const x = (cluster.x + rng.range(-cluster.spread, cluster.spread)) * LS;
+        const [x, z] = insideGlass(
+          (cluster.x + rng.range(-cluster.spread, cluster.spread)) * LS,
+          (cluster.z + rng.range(-cluster.spread, cluster.spread)) * LS,
+          0.5 * LS,
+        );
         const y = Math.min(
           CEILING - LS,
           Math.max(1.5 * LS, (cluster.y + rng.range(-0.8, 0.8)) * LS),
         );
-        const z = (cluster.z + rng.range(-cluster.spread, cluster.spread)) * LS;
         const tooClose = tangle.some(
           (hub) => Math.hypot(hub.x - x, hub.y - y, hub.z - z) < MINIMUM_HUB_GAP,
         );
