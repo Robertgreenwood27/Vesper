@@ -1,3 +1,4 @@
+import { inject } from "@vercel/analytics";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { FIXED_TIME_STEP, MAX_FRAME_DELTA, MAX_SUBSTEPS } from "../config";
@@ -31,6 +32,8 @@ import {
   type GestureKind,
 } from "./VesperMemory";
 import "./showcase.css";
+
+inject();
 
 const canvas = document.getElementById("stage") as HTMLCanvasElement;
 const status = document.getElementById("status") as HTMLElement;
