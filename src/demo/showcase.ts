@@ -98,17 +98,42 @@ scene.add(fill);
 const redLamp = new THREE.PointLight(0xd31228, 0, 26, 1.8);
 redLamp.position.set(2, 9, 4);
 scene.add(redLamp);
-const cornerLamp = new THREE.PointLight(0xffd8ac, 10.5, 36, 1.65);
-cornerLamp.position.set(8.5, 12.5, 8.5);
+const WARM_POINT_INTENSITY = 55;
+const WARM_WASH_INTENSITY = 620;
+const WARM_FILL_INTENSITY = 1.15;
+const cornerLamp = new THREE.PointLight(0xffb45f, WARM_POINT_INTENSITY, 30, 1.55);
+cornerLamp.position.set(-7.25, 12.5, 4.75);
 scene.add(cornerLamp);
+
+// A point source by itself mostly reads as a bright dot at habitat scale. Pair
+// the visible bulb with a broad, feathered spot aimed through the middle of the
+// web so the lamp actually paints warm light across Vesper and the back wall.
+const warmWashTarget = new THREE.Object3D();
+warmWashTarget.position.set(-2, 6.2, -2.2);
+scene.add(warmWashTarget);
+const warmWash = new THREE.SpotLight(
+  0xffa84f,
+  WARM_WASH_INTENSITY,
+  34,
+  Math.PI * 0.24,
+  0.82,
+  1.35,
+);
+warmWash.position.copy(cornerLamp.position);
+warmWash.target = warmWashTarget;
+scene.add(warmWash);
+const warmFill = new THREE.DirectionalLight(0xffb35d, WARM_FILL_INTENSITY);
+warmFill.position.copy(cornerLamp.position);
+warmFill.target = warmWashTarget;
+scene.add(warmFill);
 
 function buildRoom(): void {
   const bulb = new THREE.Mesh(
-    new THREE.SphereGeometry(0.075, 12, 8),
+    new THREE.SphereGeometry(0.09, 12, 8),
     new THREE.MeshStandardMaterial({
-      color: 0xffe8cb,
-      emissive: 0xffc88f,
-      emissiveIntensity: 4,
+      color: 0xffc27a,
+      emissive: 0xff7f32,
+      emissiveIntensity: 1.8,
       roughness: 0.25,
     }),
   );
@@ -1695,7 +1720,9 @@ function toggleLights(button: HTMLButtonElement): void {
   button.setAttribute("aria-pressed", String(redWatch));
   habitat.classList.toggle("red-watch", redWatch);
   redLamp.intensity = redWatch ? 3.2 : 0;
-  cornerLamp.intensity = redWatch ? 0.25 : 10.5;
+  cornerLamp.intensity = redWatch ? 0.25 : WARM_POINT_INTENSITY;
+  warmWash.intensity = redWatch ? 0 : WARM_WASH_INTENSITY;
+  warmFill.intensity = redWatch ? 0.04 : WARM_FILL_INTENSITY;
   key.intensity = redWatch ? 0.42 : 2.2;
   fill.intensity = redWatch ? 0.16 : 0.7;
   ambient.intensity = redWatch ? 0.18 : 0.43;
