@@ -37,7 +37,7 @@ Phone controls:
 ## Interactions
 
 - Click a strand to suggest a destination.
-- Offer a moth to trigger a hunt.
+- Offer a moth to trigger a hunt, leg-driven wrapping, a long meal, and occasional prey caching.
 - Touch the web to send a recognizable vibration.
 - Send Vesper to her retreat.
 - Toggle camera tracking or the red observation light.
