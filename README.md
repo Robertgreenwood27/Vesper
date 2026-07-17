@@ -37,11 +37,17 @@ Phone controls:
 ## Interactions
 
 - Click a strand to suggest a destination.
-- Offer a moth to trigger a hunt, leg-driven wrapping, a long meal, and occasional prey caching.
+- Offer a moth — it lands somewhere new and visible each time — to trigger a
+  hunt, wrapping, a long still-parcel meal, and occasional prey caching.
 - Touch the web to send a recognizable vibration.
+- With the follow camera on, drag across the silk to brush it directly. She
+  feels it, and sometimes turns toward the touch or comes to investigate.
 - Send Vesper to her retreat.
 - Toggle camera tracking or the red observation light.
 - Keyboard: `R` retreat, `F` freeze, `G` travel far, `Space` rest.
+
+Her own footfalls press into the silk as she walks, each landing ringing
+briefly through the nearby web.
 
 Her name, appetite, familiarity, visits, and feedings are stored locally in the
 browser.

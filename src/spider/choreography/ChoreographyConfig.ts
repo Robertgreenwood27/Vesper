@@ -55,20 +55,20 @@ export interface ChoreographyConfig {
    */
   midlineTolerance: number;
   /**
-   * Multiplier on the rig spec's authored joint limits. 0 disables enforcement.
+   * Multiplier on the authored *flex/extend* range of the hinge joints past the
+   * coxa. 0 disables joint-limit enforcement entirely.
    *
-   * Off by default, and that is a finding rather than laziness. The spec's own
-   * note calls its ranges "APPROXIMATE ... Validate/tune in engine". Enforced
-   * verbatim, the solver clamps ~3.75 joints per solve and reports joint-limited
-   * on 981 of 1011 solves; the feet then float an average of 0.19 model units off
-   * the silk they claim to hold — worst case 0.98, most of a leg's reach. A foot
-   * visibly not touching its strand is a worse lie than a leg bending oddly, so
-   * this loses. Widening to 2.5x still detaches by 0.19 average.
+   * The scheme: the coxa is treated as a free ball-and-socket (no limits — it
+   * is the joint that legitimately needs the whole hemisphere and it absorbs
+   * whatever the hinges refuse), while every joint past it is a hinge whose
+   * bend range is the spec's, widened by this factor, and whose sideways swing
+   * and twist keep the spec's tight authored ranges.
    *
-   * The limits are authored relative to the GLB bind pose, and a walking pose is
-   * nowhere near it — that mismatch is rig work, not runtime work. Leg direction
-   * is kept honest by `legSweepDegrees` instead, which costs no contact fidelity.
-   * Set this above 0 once the limits have been re-authored against a real stance.
+   * Historical note: enforcing the spec's limits on *every* joint used to
+   * detach feet from silk by ~0.19 model units on average, because the clamp
+   * ran after FABRIK with no correction pass. The solver now re-solves from
+   * the clamped pose, letting the free coxa make up the difference, so hinge
+   * enforcement no longer costs contact.
    */
   jointLimitScale: number;
 

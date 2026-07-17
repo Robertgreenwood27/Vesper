@@ -75,6 +75,11 @@ export interface ChoreographerOptions {
   readonly traversal: StrandTraversal;
   readonly network: WebNetwork;
   readonly config?: Partial<ChoreographyConfig>;
+  /**
+   * Fired the instant a foot finishes its swing and takes hold of real silk.
+   * The habitat uses it to press a small footfall disturbance into the web.
+   */
+  readonly onFootPlant?: (legId: SpiderLegId, address: StrandAddress) => void;
 }
 
 export interface ChoreographerState {
@@ -116,6 +121,7 @@ export class SpiderChoreographer {
   private readonly footholds: FootholdSearch;
   private readonly gait = new Gait();
   private readonly personality: Personality;
+  private readonly onFootPlant?: (legId: SpiderLegId, address: StrandAddress) => void;
 
   private intent: SpiderIntent = { kind: "rest" };
   private intentDirty = false;
@@ -181,6 +187,7 @@ export class SpiderChoreographer {
   constructor(options: ChoreographerOptions) {
     this.rig = options.rig;
     this.traversal = options.traversal;
+    this.onFootPlant = options.onFootPlant;
     this.config = createChoreographyConfig(options.config);
     this.planner = new WebRoutePlanner(options.traversal);
     this.footholds = new FootholdSearch(options.traversal);
@@ -191,9 +198,18 @@ export class SpiderChoreographer {
     ) as Record<SpiderLegId, (typeof this.rig.legs)[SpiderLegId]["reach"]>;
     this.contacts = createBlackWidowFootContacts(reachByLeg);
 
-    // Joint limits keep a leg from folding back through the body. They come from
-    // the rig spec, widened by `jointLimitScale` — see that setting for why the
-    // authored numbers cannot be used raw.
+    // Anatomical joint behavior, in two regimes. The coxa — where the leg meets
+    // the body — is a ball-and-socket and is left entirely free: it needs the
+    // whole hemisphere to swing the leg fore, aft, up, down, and out, and it is
+    // the joint that absorbs whatever rotation the rest of the chain refuses.
+    // Every joint past it is treated as a hinge — but a hinge is enforced by
+    // what it *forbids*, not what it allows: flex/extend about the bend axis
+    // stays completely free (the authored bend ranges are relative to the bind
+    // pose, which a working stance is nowhere near — clamping bend is what used
+    // to rip feet off their silk), while sideways swing and twist are held to
+    // the spec's tight ranges widened by `jointLimitScale`, so a mid-leg
+    // segment cannot splay sideways or corkscrew. The solver re-solves after
+    // clamping, letting the free axes absorb the correction.
     const scale = this.config.jointLimitScale;
     this.ik = new SpiderIKSolver(
       SPIDER_LEG_IDS.map((id) => ({
@@ -206,12 +222,15 @@ export class SpiderChoreographer {
         },
         jointLimits:
           scale > 0
-            ? this.rig.legs[id].jointLimits.map((limit) => ({
-                bendX: { min: limit.bend_x[0] * scale, max: limit.bend_x[1] * scale },
-                swingZ: { min: limit.swing_z[0] * scale, max: limit.swing_z[1] * scale },
-                twistY: { min: limit.twist_y[0] * scale, max: limit.twist_y[1] * scale },
-                unit: "degrees" as const,
-              }))
+            ? this.rig.legs[id].jointLimits.map((limit, jointIndex) =>
+                jointIndex === 0
+                  ? undefined
+                  : {
+                      swingZ: { min: limit.swing_z[0] * scale, max: limit.swing_z[1] * scale },
+                      twistY: { min: limit.twist_y[0] * scale, max: limit.twist_y[1] * scale },
+                      unit: "degrees" as const,
+                    },
+              )
             : undefined,
       })),
       { bendBias: 1, maxIterations: 12, enforceJointLimits: scale > 0 },
@@ -581,7 +600,10 @@ export class SpiderChoreographer {
         if (p >= 1) {
           state.position.copy(state.destination);
           state.moving = false;
-          if (state.address) this.contacts.get(legId)!.plant(state.address);
+          if (state.address) {
+            this.contacts.get(legId)!.plant(state.address);
+            this.onFootPlant?.(legId, state.address);
+          }
         }
       }
       // The procedural target is already continuous; bypass the extra contact
@@ -1013,6 +1035,7 @@ export class SpiderChoreographer {
 
       if (swing.landed) {
         this.contacts.get(legId)!.plant(swing.target);
+        this.onFootPlant?.(legId, swing.target);
         this.stepCooldown.set(legId, this.personality.rng.range(0.14, 0.26));
         this.swings.delete(legId);
         continue;

@@ -22,7 +22,7 @@ export class SilkRenderer {
   private readonly glowMaterial = new THREE.MeshBasicMaterial({
     color: new THREE.Color(0.3, 0.42, 0.58),
     transparent: true,
-    opacity: 0.07,
+    opacity: 0.055,
     blending: THREE.AdditiveBlending,
     depthWrite: false,
     side: THREE.DoubleSide,
@@ -31,7 +31,7 @@ export class SilkRenderer {
   private readonly coreMaterial = new THREE.MeshBasicMaterial({
     color: new THREE.Color(0.8, 0.87, 1),
     transparent: true,
-    opacity: 0.4,
+    opacity: 0.5,
     blending: THREE.AdditiveBlending,
     depthWrite: false,
     side: THREE.DoubleSide,
@@ -57,9 +57,13 @@ export class SilkRenderer {
     const store = this.network.particles;
     const { x, y, z } = camera.position;
     for (let i = 0; i < this.glows.length; i += 1) {
-      // The tiny camera offset keeps the core ribbon from z-fighting its glow.
-      this.glows[i].update(store, 0.009, x, y, z, 0);
-      this.cores[i].update(store, 0.0018, x, y, z, 0.001);
+      // Real silk is microns wide and read almost entirely as caught light, so
+      // the ribbons stay near the one-pixel floor: a whisper of halo around a
+      // bright hairline core. Interaction picking is screen-space and does not
+      // depend on these widths. The tiny camera offset keeps the core ribbon
+      // from z-fighting its glow.
+      this.glows[i].update(store, 0.0036, x, y, z, 0);
+      this.cores[i].update(store, 0.0007, x, y, z, 0.001);
     }
   }
 

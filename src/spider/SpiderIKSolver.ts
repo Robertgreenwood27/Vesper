@@ -246,7 +246,8 @@ export class SpiderIKSolver {
       return result;
     }
 
-    if (rootDistance > totalLength - tolerance) {
+    const reachable = rootDistance <= totalLength - tolerance;
+    if (!reachable) {
       const inverseDistance = rootDistance > EPSILON ? 1 / rootDistance : 0;
       const directionX = targetDx * inverseDistance;
       const directionY = targetDy * inverseDistance;
@@ -289,6 +290,43 @@ export class SpiderIKSolver {
 
     chain.bones[chain.drivenCount].getWorldPosition(result.solvedFootPosition);
     result.residual = result.solvedFootPosition.distanceTo(result.requestedTarget);
+
+    // Joint clamps change the foot position after FABRIK has finished, which is
+    // exactly how limit enforcement used to detach feet from their silk. So when
+    // a clamp fired and pushed the foot off target, re-run FABRIK *from the
+    // clamped pose*: the unconstrained joints — chiefly the ball-and-socket coxa
+    // — absorb the rotation the hinges refused, and the pose converges to one
+    // that satisfies both the limits and the contact.
+    if (enforceJointLimits && reachable) {
+      for (
+        let round = 0;
+        round < 2 &&
+        result.jointClampCount > 0 &&
+        result.residual > tolerance * 4 &&
+        this.readCurrentPose(chain);
+        round += 1
+      ) {
+        result.iterations += this.solveReachable(
+          chain,
+          target,
+          rootX,
+          rootY,
+          rootZ,
+          maxIterations,
+          tolerance,
+          bendBias,
+        );
+        if (!allFinite(positions)) break;
+        if (!this.applySolvedPose(chain, enforceJointLimits)) {
+          this.restorePreviousPose(chain);
+          result.status = 'non-finite-result';
+          result.message = 'A refined bone quaternion was invalid; the previous pose was restored.';
+          return result;
+        }
+        chain.bones[chain.drivenCount].getWorldPosition(result.solvedFootPosition);
+        result.residual = result.solvedFootPosition.distanceTo(result.requestedTarget);
+      }
+    }
     result.solvedReach = result.solvedFootPosition.distanceTo(
       this.vectorA.set(rootX, rootY, rootZ),
     );

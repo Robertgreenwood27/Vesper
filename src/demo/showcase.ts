@@ -233,6 +233,9 @@ const SHOWCASE_CHOREOGRAPHY = {
   abdomenLag: 0.18,
   pauseChancePerSecond: 0.22,
   bodyWeight: 0.95,
+  // Hinge realism for the leg joints past the coxa; the coxa itself stays a
+  // free ball-and-socket. See ChoreographyConfig.jointLimitScale.
+  jointLimitScale: 1.35,
 } as const;
 
 interface PetMemory {
@@ -343,6 +346,7 @@ const mothFeedingAnchor = new THREE.Vector3();
 const mothFrontFeet = new THREE.Vector3();
 const mothFootScratch = new THREE.Vector3();
 const homeWorldPosition = new THREE.Vector3();
+const mothRestRotation = new THREE.Euler();
 const feedingJointRotation = new THREE.Quaternion();
 const feedingJointInverse = new THREE.Quaternion();
 const feedingJointOverlays = new Map<THREE.Bone, THREE.Quaternion>();
@@ -622,18 +626,78 @@ function createMoth(): THREE.Group {
   return group;
 }
 
+const recentMothSpots: THREE.Vector3[] = [];
+const mothCandidatePosition = new THREE.Vector3();
+const mothCandidateProjected = new THREE.Vector3();
+
+/**
+ * Picks somewhere for prey to land. Sampled, not fixed: candidates are random
+ * strand addresses, kept only if they sit in the web proper and inside the
+ * current camera frame, then scored for centrality (the keeper should see the
+ * catch), variety (away from where recent moths landed), and a workable
+ * distance from Vesper — close enough to reach, far enough to make a hunt.
+ */
+function chooseMothAddress(): { strandId: string; t: number } | null {
+  const strands = web.network.strandList;
+  if (loadedRig) loadedRig.rootObject.getWorldPosition(petWorldPosition);
+  let best: { strandId: string; t: number } | null = null;
+  let bestScore = -Infinity;
+
+  for (let attempt = 0; attempt < 48; attempt += 1) {
+    const strand = strands[Math.floor(Math.random() * strands.length)];
+    if (!strand.active || strand.broken) continue;
+    const t = 0.3 + Math.random() * 0.4;
+    traversal.getWorldPosition({ strandId: strand.id, t }, mothCandidatePosition);
+    if (mothCandidatePosition.y < 1.8) continue; // stray floor-anchor lines
+
+    mothCandidateProjected.copy(mothCandidatePosition).project(camera);
+    if (mothCandidateProjected.z < -1 || mothCandidateProjected.z > 1) continue;
+    if (Math.abs(mothCandidateProjected.x) > 0.85 || Math.abs(mothCandidateProjected.y) > 0.85) {
+      continue;
+    }
+    const centrality =
+      1 - Math.max(Math.abs(mothCandidateProjected.x), Math.abs(mothCandidateProjected.y));
+
+    let variety = 1;
+    for (const spot of recentMothSpots) {
+      variety = Math.min(variety, mothCandidatePosition.distanceTo(spot) / 6);
+    }
+
+    let reachBias = 0;
+    if (loadedRig) {
+      const distance = petWorldPosition.distanceTo(mothCandidatePosition);
+      reachBias = distance < 1.2 ? -0.6 : distance > 11 ? -0.35 : 0.2;
+    }
+
+    const score = centrality + variety * 0.9 + reachBias + Math.random() * 0.15;
+    if (score > bestScore) {
+      bestScore = score;
+      best = { strandId: strand.id, t };
+    }
+  }
+  return best;
+}
+
 function offerMoth(source: "keeper" | "wild" = "keeper"): void {
   if (!choreographer || moth) return;
-  const farNode = web.network.nodes.get(web.farNodeId);
-  const strandId = farNode ? [...farNode.connectedStrandIds][0] : web.homeStrandId;
-  if (!strandId) return;
-  mothAddress = { strandId, t: 0.58 };
+  const picked = chooseMothAddress();
+  if (!picked) {
+    // Nothing framed nicely; fall back to the far line rather than skip the meal.
+    const farNode = web.network.nodes.get(web.farNodeId);
+    const strandId = farNode ? [...farNode.connectedStrandIds][0] : web.homeStrandId;
+    if (!strandId) return;
+    mothAddress = { strandId, t: 0.58 };
+  } else {
+    mothAddress = picked;
+  }
   moth = createMoth();
   mothSource = source;
   if (source === "wild") moth.scale.setScalar(0.72);
   scene.add(moth);
   traversal.getWorldPosition(mothAddress, mothWorldPosition);
   moth.position.copy(mothWorldPosition);
+  recentMothSpots.push(mothWorldPosition.clone());
+  if (recentMothSpots.length > 4) recentMothSpots.shift();
   mothStage = "noticed";
   mothTimer = 0;
   nextMothTremor = 0.15;
@@ -671,13 +735,15 @@ function removeMoth(): void {
   mothAddress = null;
 }
 
-function setMothWrap(amount: number): void {
+function setMothWrap(amount: number, spinning = false): void {
   if (!moth) return;
   const wrap = moth.getObjectByName("silk-wrap");
   if (!wrap) return;
   const opacity = THREE.MathUtils.clamp(amount, 0, 1);
   wrap.visible = opacity > 0.01;
-  wrap.rotation.set(habitatTime * 0.45, habitatTime * 0.31, habitatTime * 0.37);
+  // The bands only tumble while she is actively winding silk on. A finished
+  // parcel is a still parcel.
+  if (spinning) wrap.rotation.set(habitatTime * 0.45, habitatTime * 0.31, habitatTime * 0.37);
   wrap.traverse((child) => {
     if (!(child instanceof THREE.Mesh)) return;
     const materials = Array.isArray(child.material) ? child.material : [child.material];
@@ -728,7 +794,10 @@ function positionMothAtMouth(stage: MothStage, wrapAmount: number): void {
   mothFrontFeet.add(mothFootScratch).multiplyScalar(0.5);
   mothFeedingAnchor.lerp(mothFrontFeet, 0.28);
 
-  const tumble = stage === "subduing" ? 1 : stage === "wrapping" ? 0.62 : 0.18;
+  // Distinct stages, distinct energy: a violent pinned struggle, a deliberate
+  // rotation while silk goes on, then stillness. During the long feed the
+  // parcel is held against her mouthparts and barely moves at all.
+  const tumble = stage === "subduing" ? 1 : stage === "wrapping" ? 0.62 : 0.035;
   mothWorldPosition.copy(mothFeedingAnchor);
   mothWorldPosition.x += Math.sin(habitatTime * 7.1) * 0.055 * tumble;
   mothWorldPosition.y += Math.cos(habitatTime * 8.3) * 0.035 * tumble;
@@ -742,14 +811,27 @@ function positionMothAtMouth(stage: MothStage, wrapAmount: number): void {
     moth.position.copy(mothWorldPosition);
   }
 
-  const spin = stage === "subduing" ? 9 : stage === "wrapping" ? 5 : 1.4;
-  moth.rotation.set(
-    habitatTime * spin * 0.73,
-    habitatTime * spin,
-    habitatTime * spin * 0.51,
-  );
+  if (stage === "feeding") {
+    // Frozen at whatever orientation the wrap finished in, plus a drift so
+    // slow it reads as her breath moving the parcel rather than the parcel
+    // moving itself.
+    moth.rotation.set(
+      mothRestRotation.x + Math.sin(habitatTime * 0.5) * 0.02,
+      mothRestRotation.y + Math.sin(habitatTime * 0.37 + 1.3) * 0.016,
+      mothRestRotation.z,
+    );
+  } else {
+    const spin = stage === "subduing" ? 9 : 5;
+    moth.rotation.set(
+      habitatTime * spin * 0.73,
+      habitatTime * spin,
+      habitatTime * spin * 0.51,
+    );
+    // Track continuously so the freeze into feeding is seamless.
+    mothRestRotation.copy(moth.rotation);
+  }
   moth.scale.setScalar(THREE.MathUtils.lerp(0.72, 0.46, mothMealProgress));
-  setMothWrap(wrapAmount);
+  setMothWrap(wrapAmount, stage === "subduing" || stage === "wrapping");
 }
 
 function finishMothMeal(): void {
@@ -781,6 +863,41 @@ function finishMothMeal(): void {
       ? `${memory.name} made her own luck`
       : `${memory.name} finished your moth · familiarity increased`,
   );
+}
+
+const footfallDirection = new THREE.Vector3();
+
+/**
+ * A footfall pressed into the silk. Each landing tugs the strand a little way
+ * toward her body — the direction a gripping claw actually loads it — with a
+ * falloff over the neighbouring particles so the disturbance rings briefly
+ * through the local web and dies. Deliberately about a seventh of a keeper's
+ * pluck: presence, not bounce.
+ */
+function pressFootfall(address: { strandId: string; t: number }): void {
+  const strand = web.network.strands.get(address.strandId);
+  if (!strand || !loadedRig) return;
+  const count = strand.particleIndices.length;
+  const center = Math.max(1, Math.min(count - 2, Math.round(address.t * (count - 1))));
+  loadedRig.rootObject.getWorldPosition(petWorldPosition);
+  const store = web.network.particles;
+
+  for (let offset = -2; offset <= 2; offset += 1) {
+    const index = center + offset;
+    if (index <= 0 || index >= count - 1) continue; // endpoints anchor the web
+    const particle = strand.particleIndices[index];
+    footfallDirection
+      .set(
+        petWorldPosition.x - store.positions[particle * 3],
+        petWorldPosition.y - store.positions[particle * 3 + 1],
+        petWorldPosition.z - store.positions[particle * 3 + 2],
+      )
+      .normalize();
+    const push = 0.22 * (1 - Math.abs(offset) * 0.38) * FIXED_TIME_STEP;
+    store.previousPositions[particle * 3] -= footfallDirection.x * push;
+    store.previousPositions[particle * 3 + 1] -= footfallDirection.y * push;
+    store.previousPositions[particle * 3 + 2] -= footfallDirection.z * push;
+  }
 }
 
 function pluckSilk(strength = 1.2): void {
@@ -926,6 +1043,7 @@ async function boot(): Promise<void> {
     traversal,
     network: web.network,
     config: SHOWCASE_CHOREOGRAPHY,
+    onFootPlant: (_legId, address) => pressFootfall(address),
   });
 
   // Let the web hang and settle before the spider arrives, so she lands on silk
@@ -992,6 +1110,10 @@ if (import.meta.env.DEV) {
     travelTo: (nodeId: string) =>
       choreographer?.setIntent({ kind: "travel", to: { kind: "node", nodeId } }),
     raw: () => ({ choreographer, traversal, rig: loadedRig, network: web.network, dew, firefly }),
+    webSense: () => ({
+      disturbance: Number(webDisturbance.toFixed(3)),
+      respondsAfter: Number((nextTouchResponseAt - habitatTime).toFixed(1)),
+    }),
     /** Frames the spider so a screenshot actually shows her. */
     look: (distance = 1.6, azimuth = 0.7, elevation = 0.35) => {
       if (!loadedRig) return null;
@@ -1078,6 +1200,7 @@ if (import.meta.env.DEV) {
           ...SHOWCASE_CHOREOGRAPHY,
           ...overrides,
         } as ConstructorParameters<typeof SpiderChoreographer>[0]["config"],
+        onFootPlant: (_legId, address) => pressFootfall(address),
       });
       return settleSpider();
     },
@@ -1089,22 +1212,28 @@ if (import.meta.env.DEV) {
 const pointer = new THREE.Vector2();
 const projected = new THREE.Vector3();
 
+interface SilkPick {
+  particle: number;
+  world: THREE.Vector3;
+}
+
 /**
  * Picking silk by raycast is hopeless — the strands are a few thousandths of a
  * unit wide. Instead the nearest particle in *screen space* wins, which is what
- * the player means when they click near a thread anyway.
+ * the player means when they click near a thread anyway. The pick radius is a
+ * forgiving screen-space target and has nothing to do with rendered thickness.
  */
-function pickSilk(event: PointerEvent): THREE.Vector3 | null {
+function pickSilkAt(clientX: number, clientY: number): SilkPick | null {
   const rect = canvas.getBoundingClientRect();
   pointer.set(
-    ((event.clientX - rect.left) / rect.width) * 2 - 1,
-    -((event.clientY - rect.top) / rect.height) * 2 + 1,
+    ((clientX - rect.left) / rect.width) * 2 - 1,
+    -((clientY - rect.top) / rect.height) * 2 + 1,
   );
 
   const store = web.network.particles;
-  let bestDistance = 0.05; // squared NDC radius — a forgiving click target
+  let bestDistance = 0.05; // squared NDC radius
   let bestDepth = Infinity;
-  let best: THREE.Vector3 | null = null;
+  let best: SilkPick | null = null;
 
   for (let i = 0; i < store.count; i += 1) {
     projected.set(store.positions[i * 3], store.positions[i * 3 + 1], store.positions[i * 3 + 2]);
@@ -1119,10 +1248,14 @@ function pickSilk(event: PointerEvent): THREE.Vector3 | null {
     if (distance < bestDistance && projected.z < bestDepth) {
       bestDistance = Math.max(distance, 1e-6);
       bestDepth = projected.z;
-      best = world;
+      best = { particle: i, world };
     }
   }
   return best;
+}
+
+function pickSilk(event: PointerEvent): THREE.Vector3 | null {
+  return pickSilkAt(event.clientX, event.clientY)?.world ?? null;
 }
 
 interface TapCandidate {
@@ -1134,6 +1267,123 @@ interface TapCandidate {
 }
 
 let tapCandidate: TapCandidate | null = null;
+
+// --- Touching the web ----------------------------------------------------------
+// With the camera following her, drags are free — so a drag becomes a finger
+// laid against the silk. Each brush displaces a small neighbourhood of
+// particles and leaves a trace she can feel.
+
+interface WebTouch {
+  pointerId: number;
+  x: number;
+  y: number;
+  lastImpulseAt: number;
+}
+
+let webTouch: WebTouch | null = null;
+/** Decaying sum of recent brush energy — what her feet actually read. */
+let webDisturbance = 0;
+const webDisturbancePoint = new THREE.Vector3();
+let nextTouchResponseAt = 0;
+const brushDirection = new THREE.Vector3();
+const brushBasisX = new THREE.Vector3();
+const brushBasisY = new THREE.Vector3();
+const brushOffset = new THREE.Vector3();
+
+/**
+ * Lays a moving touch into the silk: a gentle displacement along the drag
+ * direction, spread over nearby particles with falloff. Tuned well below the
+ * deliberate signal pluck — brushing silk, not strumming a bass string.
+ */
+function brushSilk(pick: SilkPick, dx: number, dy: number): void {
+  const speed = Math.hypot(dx, dy);
+  if (speed < 1) return;
+  const strength = THREE.MathUtils.clamp(speed / 26, 0.08, 0.5);
+
+  // Screen drag mapped into world space through the camera basis.
+  brushBasisX.setFromMatrixColumn(camera.matrixWorld, 0);
+  brushBasisY.setFromMatrixColumn(camera.matrixWorld, 1);
+  brushDirection
+    .set(0, 0, 0)
+    .addScaledVector(brushBasisX, dx)
+    .addScaledVector(brushBasisY, -dy)
+    .normalize();
+
+  const store = web.network.particles;
+  const radius = 0.34;
+  const radiusSq = radius * radius;
+  for (let i = 0; i < store.count; i += 1) {
+    brushOffset.set(
+      store.positions[i * 3] - pick.world.x,
+      store.positions[i * 3 + 1] - pick.world.y,
+      store.positions[i * 3 + 2] - pick.world.z,
+    );
+    const distanceSq = brushOffset.lengthSq();
+    if (distanceSq > radiusSq) continue;
+    const falloff = 1 - Math.sqrt(distanceSq) / radius;
+    const push = strength * falloff * 0.55 * FIXED_TIME_STEP;
+    store.previousPositions[i * 3] -= brushDirection.x * push;
+    store.previousPositions[i * 3 + 1] -= brushDirection.y * push;
+    store.previousPositions[i * 3 + 2] -= brushDirection.z * push;
+  }
+
+  webDisturbance = Math.min(3, webDisturbance + strength * 0.55);
+  webDisturbancePoint.copy(pick.world);
+}
+
+/**
+ * Her side of the exchange. Disturbance decays on its own; if enough of it
+ * accumulates while she is free, she may answer — usually just by turning
+ * toward the source, sometimes by walking over to inspect it. Cooldowns and
+ * familiarity keep it from becoming a vending machine.
+ */
+function updateWebSense(dt: number): void {
+  webDisturbance = Math.max(0, webDisturbance - dt * (0.35 + webDisturbance * 0.12));
+  if (!choreographer || webDisturbance < 0.85 || habitatTime < nextTouchResponseAt) return;
+
+  const free =
+    !moth &&
+    (petMode === "watching" ||
+      petMode === "resting" ||
+      petMode === "listening" ||
+      petMode === "grooming" ||
+      petMode === "wandering");
+  if (!free) return;
+
+  // She is not obliged to care. Familiar keepers get answered more often.
+  if (Math.random() > 0.3 + memory.bond / 250 + webDisturbance * 0.1) {
+    nextTouchResponseAt = habitatTime + 6 + Math.random() * 8;
+    webDisturbance *= 0.5;
+    return;
+  }
+
+  if (loadedRig) loadedRig.rootObject.getWorldPosition(petWorldPosition);
+  const distance = loadedRig ? petWorldPosition.distanceTo(webDisturbancePoint) : Infinity;
+  const investigates = distance < 7 && Math.random() < 0.45 + memory.hunger / 300;
+
+  if (investigates) {
+    choreographer.setIntent({
+      kind: "travel",
+      to: { kind: "world", position: webDisturbancePoint.clone(), maximumSnapDistance: 0.9 },
+      urgency: 0.8,
+    });
+    setPetMode(
+      "wandering",
+      `${memory.name} follows your touch back to the strand it moved.`,
+      "investigating your touch",
+    );
+  } else {
+    choreographer.setIntent({ kind: "attend", at: webDisturbancePoint });
+    setPetMode(
+      "listening",
+      `${memory.name} reads the brush of your finger through eight feet.`,
+      "feeling your touch",
+    );
+  }
+  memory.bond = Math.min(100, memory.bond + 0.25);
+  webDisturbance = 0;
+  nextTouchResponseAt = habitatTime + 16 + Math.random() * 26;
+}
 
 function suggestDestination(event: PointerEvent): void {
   if (!choreographer) return;
@@ -1163,15 +1413,43 @@ canvas.addEventListener("pointerdown", (event) => {
     startedAt: performance.now(),
     moved: false,
   };
+  if (followSpider) {
+    webTouch = {
+      pointerId: event.pointerId,
+      x: event.clientX,
+      y: event.clientY,
+      lastImpulseAt: 0,
+    };
+  }
 });
 
 canvas.addEventListener("pointermove", (event) => {
-  if (!tapCandidate || tapCandidate.pointerId !== event.pointerId) return;
-  const distance = Math.hypot(event.clientX - tapCandidate.x, event.clientY - tapCandidate.y);
-  if (distance > 11) tapCandidate.moved = true;
+  if (tapCandidate && tapCandidate.pointerId === event.pointerId) {
+    const distance = Math.hypot(event.clientX - tapCandidate.x, event.clientY - tapCandidate.y);
+    if (distance > 11) tapCandidate.moved = true;
+  }
+
+  if (webTouch && webTouch.pointerId === event.pointerId) {
+    const now = performance.now();
+    const dx = event.clientX - webTouch.x;
+    const dy = event.clientY - webTouch.y;
+    // Throttled: pointermove can fire per-pixel, and each brush already covers
+    // a neighbourhood.
+    if (now - webTouch.lastImpulseAt > 30 && Math.hypot(dx, dy) > 2) {
+      const pick = pickSilkAt(event.clientX, event.clientY);
+      if (pick) {
+        brushSilk(pick, dx, dy);
+        lastUserAction = habitatTime;
+      }
+      webTouch.lastImpulseAt = now;
+      webTouch.x = event.clientX;
+      webTouch.y = event.clientY;
+    }
+  }
 });
 
 canvas.addEventListener("pointerup", (event) => {
+  if (webTouch && webTouch.pointerId === event.pointerId) webTouch = null;
   if (!tapCandidate || tapCandidate.pointerId !== event.pointerId) return;
   const candidate = tapCandidate;
   tapCandidate = null;
@@ -1181,6 +1459,7 @@ canvas.addEventListener("pointerup", (event) => {
 
 canvas.addEventListener("pointercancel", () => {
   tapCandidate = null;
+  webTouch = null;
 });
 
 function retreat(): void {
@@ -1622,6 +1901,7 @@ function frame(now: number): void {
   updateMoth(delta);
   updateAutonomy(delta);
   updateAtmosphere(delta);
+  updateWebSense(delta);
   updateFreshSilk(delta);
   updateEyeShine(delta);
   if (toastTimer > 0) {
