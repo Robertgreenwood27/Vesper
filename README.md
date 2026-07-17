@@ -93,6 +93,28 @@ Spider/               editable Blender source and rig development notes
 `npm run build` type-checks the complete production source before creating the
 static Vite build.
 
+## Private engagement analytics
+
+The habitat records a small set of anonymous engagement signals in a private
+Vercel Blob store. Events are counted at most once per browser tab, batched to
+limit Blob operations, and contain no IP address, fingerprint, persistent
+visitor ID, or raw interaction history. Preview and local deployments accept
+the client calls without storing them. The tracker also honors browser Do Not
+Track and Global Privacy Control signals.
+
+Required Vercel configuration:
+
+- Connect a private Blob store with the `BLOB` prefix and enable its read/write
+  token, which creates `BLOB_READ_WRITE_TOKEN`.
+- Add a secret `ANALYTICS_ADMIN_TOKEN` environment variable to Production. Use
+  a long random value and never commit it.
+- Redeploy after adding or changing either variable.
+
+Visit `/stats/`, enter `ANALYTICS_ADMIN_TOKEN`, and choose a reporting window to
+view the private aggregate dashboard. The token is retained only in that tab's
+session storage. The dashboard API returns aggregate counters and never exposes
+stored event batches.
+
 ## History and recovery
 
 The repository was initialized immediately before the old research lab was

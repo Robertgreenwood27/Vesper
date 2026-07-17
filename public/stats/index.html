@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="robots" content="noindex, nofollow, noarchive" />
+    <meta name="theme-color" content="#070706" />
+    <title>Vesper · Engagement</title>
+    <link rel="stylesheet" href="/stats/styles.css" />
+  </head>
+  <body>
+    <main>
+      <header>
+        <div>
+          <p class="eyebrow">PRIVATE OBSERVATION LOG</p>
+          <h1>Vesper engagement</h1>
+          <p class="lede">Anonymous, aggregate signals from the habitat.</p>
+        </div>
+        <a href="/">Return to habitat</a>
+      </header>
+
+      <section class="auth-card" id="auth-card">
+        <form id="auth-form">
+          <label for="token">Dashboard token</label>
+          <div class="auth-row">
+            <input id="token" name="token" type="password" autocomplete="current-password" required />
+            <select id="days" name="days" aria-label="Reporting window">
+              <option value="7">Last 7 days</option>
+              <option value="30" selected>Last 30 days</option>
+              <option value="90">Last 90 days</option>
+            </select>
+            <button type="submit">Load report</button>
+          </div>
+        </form>
+        <p id="message" role="status">Enter the value of <code>ANALYTICS_ADMIN_TOKEN</code>.</p>
+      </section>
+
+      <div id="report" hidden>
+        <section class="summary" id="summary" aria-label="Engagement summary"></section>
+
+        <section class="panel">
+          <div class="panel-heading">
+            <div>
+              <p class="eyebrow">DEPTH</p>
+              <h2>What visitors did</h2>
+            </div>
+            <p id="report-range"></p>
+          </div>
+          <div class="event-list" id="event-list"></div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-heading">
+            <div>
+              <p class="eyebrow">RHYTHM</p>
+              <h2>Daily engaged visits</h2>
+            </div>
+            <p>Each signal is counted at most once per browser tab.</p>
+          </div>
+          <div class="daily-chart" id="daily-chart"></div>
+        </section>
+
+        <footer>
+          <span id="generated-at"></span>
+          <button type="button" class="text-button" id="forget-token">Forget token</button>
+        </footer>
+      </div>
+    </main>
+    <script type="module" src="/stats/stats.js"></script>
+  </body>
+</html>
+

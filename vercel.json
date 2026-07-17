@@ -3,6 +3,16 @@
   "framework": "vite",
   "buildCommand": "npm run build",
   "outputDirectory": "dist",
+  "rewrites": [
+    {
+      "source": "/stats",
+      "destination": "/stats/index.html"
+    },
+    {
+      "source": "/stats/",
+      "destination": "/stats/index.html"
+    }
+  ],
   "headers": [
     {
       "source": "/sw.js",
@@ -23,6 +33,15 @@
         {
           "key": "Content-Type",
           "value": "application/manifest+json"
+        }
+      ]
+    },
+    {
+      "source": "/stats/(.*)",
+      "headers": [
+        {
+          "key": "X-Robots-Tag",
+          "value": "noindex, nofollow, noarchive"
         }
       ]
     }

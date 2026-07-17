@@ -1,4 +1,4 @@
-const CACHE_NAME = "vesper-habitat-v1";
+const CACHE_NAME = "vesper-habitat-v2";
 const APP_SHELL = [
   "/",
   "/manifest.webmanifest",
@@ -23,7 +23,13 @@ self.addEventListener("activate", (event) => {
 
 self.addEventListener("fetch", (event) => {
   const request = event.request;
-  if (request.method !== "GET" || new URL(request.url).origin !== self.location.origin) return;
+  const url = new URL(request.url);
+  if (
+    request.method !== "GET" ||
+    url.origin !== self.location.origin ||
+    url.pathname.startsWith("/api/") ||
+    url.pathname.startsWith("/stats/")
+  ) return;
 
   event.respondWith(
     fetch(request)

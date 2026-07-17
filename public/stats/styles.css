@@ -1,0 +1,165 @@
+:root {
+  color-scheme: dark;
+  font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+  background: #070706;
+  color: #e8e1d5;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background:
+    radial-gradient(circle at 75% 0%, rgba(113, 17, 31, 0.18), transparent 34rem),
+    #070706;
+}
+
+main {
+  width: min(1120px, calc(100% - 32px));
+  margin: 0 auto;
+  padding: 48px 0 72px;
+}
+
+header, .panel-heading, footer, .auth-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+}
+
+header { margin-bottom: 34px; }
+
+h1, h2, p { margin: 0; }
+
+h1 {
+  font-family: Georgia, serif;
+  font-weight: 400;
+  font-size: clamp(2.2rem, 6vw, 4.6rem);
+  letter-spacing: -0.04em;
+}
+
+h2 { font-size: 1.15rem; font-weight: 600; }
+
+a, .text-button {
+  color: #ba9da0;
+  text-decoration: none;
+}
+
+.eyebrow {
+  color: #a45661;
+  font: 600 0.67rem/1.4 ui-monospace, monospace;
+  letter-spacing: 0.18em;
+}
+
+.lede, .panel-heading > p, footer, #message {
+  color: #8d8880;
+  font-size: 0.86rem;
+}
+
+.auth-card, .panel {
+  border: 1px solid #282422;
+  background: rgba(14, 13, 12, 0.86);
+  padding: 22px;
+  margin-bottom: 20px;
+}
+
+label {
+  display: block;
+  margin-bottom: 9px;
+  color: #b7afa5;
+  font-size: 0.78rem;
+}
+
+.auth-row { justify-content: flex-start; }
+
+input, select, button {
+  min-height: 42px;
+  border: 1px solid #403637;
+  background: #0b0a09;
+  color: #e8e1d5;
+  padding: 0 13px;
+  font: inherit;
+}
+
+input { flex: 1; min-width: 180px; }
+button { cursor: pointer; border-color: #74303b; }
+button:hover { background: #231116; }
+#message { margin-top: 12px; }
+#message.error { color: #e28792; }
+
+.summary {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+  margin: 24px 0 20px;
+}
+
+.metric {
+  min-height: 130px;
+  padding: 19px;
+  border: 1px solid #282422;
+  background: linear-gradient(145deg, rgba(35, 17, 21, 0.6), rgba(11, 10, 9, 0.9));
+}
+
+.metric strong {
+  display: block;
+  margin-top: 12px;
+  font: 400 2.4rem/1 Georgia, serif;
+}
+
+.metric small { color: #827b73; }
+.panel-heading { align-items: flex-end; margin-bottom: 22px; }
+
+.event-row {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) 4fr 64px;
+  gap: 15px;
+  align-items: center;
+  min-height: 39px;
+}
+
+.event-row span { color: #aaa198; font-size: 0.81rem; }
+.event-row output { text-align: right; font: 0.8rem ui-monospace, monospace; }
+.track { height: 4px; background: #24201e; overflow: hidden; }
+.track i { display: block; height: 100%; background: #a5263a; }
+
+.daily-chart {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(28px, 1fr));
+  gap: 7px;
+  min-height: 180px;
+  align-items: end;
+}
+
+.day {
+  display: flex;
+  min-width: 0;
+  height: 180px;
+  flex-direction: column;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+}
+
+.day i {
+  width: 100%;
+  min-height: 2px;
+  background: linear-gradient(#b4384b, #5f1723);
+}
+
+.day span { color: #716c66; font: 0.58rem ui-monospace, monospace; }
+.day output { color: #bcb3aa; font: 0.65rem ui-monospace, monospace; }
+footer { margin-top: 16px; }
+.text-button { min-height: auto; padding: 5px; border: 0; background: transparent; }
+
+@media (max-width: 680px) {
+  main { width: min(100% - 22px, 1120px); padding-top: 26px; }
+  header, .panel-heading, footer { align-items: flex-start; }
+  .auth-row { flex-wrap: wrap; }
+  input { flex-basis: 100%; }
+  .summary { grid-template-columns: repeat(2, 1fr); }
+  .event-row { grid-template-columns: minmax(130px, 1fr) 2fr 42px; gap: 9px; }
+  .panel, .auth-card { padding: 16px; }
+}
+

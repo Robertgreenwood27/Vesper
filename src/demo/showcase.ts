@@ -1,6 +1,10 @@
 import { inject } from "@vercel/analytics";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
+import {
+  initializeEngagementTracking,
+  trackEngagement,
+} from "../analytics/engagementTracker";
 import { FIXED_TIME_STEP, MAX_FRAME_DELTA, MAX_SUBSTEPS } from "../config";
 import { WebPhysicsSolver } from "../physics/WebPhysicsSolver";
 import { SpiderChoreographer } from "../spider/choreography/index";
@@ -34,6 +38,7 @@ import {
 import "./showcase.css";
 
 inject();
+initializeEngagementTracking();
 
 const canvas = document.getElementById("stage") as HTMLCanvasElement;
 const status = document.getElementById("status") as HTMLElement;
@@ -723,6 +728,7 @@ panelToggles.forEach((button) => {
   button.addEventListener("click", () => {
     const panel = button.dataset.panelToggle as HabitatPanel;
     setPanelVisibility(panel, !panelVisibility[panel]);
+    trackEngagement(panel === "status" ? "info_panel_used" : "care_panel_used");
     hapticPulse(7);
   });
 });
@@ -987,6 +993,7 @@ function offerMoth(source: "keeper" | "wild" = "keeper"): void {
   }
   moth = createMoth();
   mothSource = source;
+  if (source === "keeper") trackEngagement("moth_offered");
   if (source === "wild") moth.scale.setScalar(0.72);
   scene.add(moth);
   traversal.getWorldPosition(mothAddress, mothWorldPosition);
@@ -1154,6 +1161,7 @@ function finishMothMeal(): void {
   } else {
     // The completed meal is the meaningful event — offering one is not.
     recordKeeperMealCompleted(memory, sessionBudget);
+    trackEngagement("moth_meal_completed");
     if (finishedAddress) {
       recordLocationEvent(memory, finishedAddress.strandId, finishedAddress.t, "catch", Date.now());
     }
@@ -1373,6 +1381,7 @@ async function boot(): Promise<void> {
   }
 
   if (!settleSpider()) {
+    trackEngagement("load_failed");
     setStatus("She cannot find safe footing in this web.");
     return;
   }
@@ -1872,6 +1881,7 @@ function suggestDestination(event: PointerEvent): void {
   if (!choreographer) return;
   const target = pickSilk(event);
   if (!target) return;
+  trackEngagement("strand_destination_chosen");
   choreographer.setIntent({
     kind: "travel",
     to: { kind: "world", position: target, maximumSnapDistance: 0.5 },
@@ -1921,6 +1931,7 @@ canvas.addEventListener("pointermove", (event) => {
     if (now - webTouch.lastImpulseAt > 30 && Math.hypot(dx, dy) > 2) {
       const pick = pickSilkAt(event.clientX, event.clientY);
       if (pick) {
+        trackEngagement("web_touched");
         brushSilk(pick, dx, dy);
         lastUserAction = habitatTime;
       }
@@ -1951,6 +1962,7 @@ canvas.addEventListener("pointercancel", () => {
 
 function retreat(): void {
   if (!choreographer) return;
+  trackEngagement("retreat_used");
   choreographer.setIntent({ kind: "retreat", to: { kind: "node", nodeId: web.retreatNodeId } });
   lastUserAction = habitatTime;
   setPetMode("retreating", `${memory.name} knows the safest knot in the web.`, "returning to her retreat");
@@ -1962,6 +1974,7 @@ let signalBurst = 0;
 
 function signalOnWeb(): void {
   if (!choreographer) return;
+  trackEngagement("web_touched");
   pluckSilk(1.55);
   const sinceLast = habitatTime - lastSignalAt;
   lastSignalAt = habitatTime;
@@ -1985,6 +1998,7 @@ function signalOnWeb(): void {
 }
 
 function toggleFollow(button: HTMLButtonElement): void {
+  trackEngagement("camera_follow_used");
   followSpider = !followSpider;
   button.setAttribute("aria-pressed", String(followSpider));
   controls.enabled = !followSpider;
@@ -1992,6 +2006,7 @@ function toggleFollow(button: HTMLButtonElement): void {
 }
 
 function toggleLights(button: HTMLButtonElement): void {
+  trackEngagement("observation_light_used");
   redWatch = !redWatch;
   button.setAttribute("aria-pressed", String(redWatch));
   habitat.classList.toggle("red-watch", redWatch);
@@ -2009,6 +2024,7 @@ function toggleLights(button: HTMLButtonElement): void {
 function renamePet(): void {
   const next = window.prompt("What should she answer to?", memory.name);
   if (!next?.trim()) return;
+  trackEngagement("vesper_renamed");
   memory.name = next.trim().slice(0, 18);
   saveMemory();
   updateHud();
@@ -2567,6 +2583,7 @@ if ("serviceWorker" in navigator && import.meta.env.PROD) {
 }
 
 boot().catch((error: unknown) => {
+  trackEngagement("load_failed");
   setStatus(error instanceof Error ? error.message : String(error));
   console.error(error);
 });
