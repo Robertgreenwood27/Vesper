@@ -7,6 +7,10 @@ import {
 } from "../analytics/engagementTracker";
 import { FIXED_TIME_STEP, MAX_FRAME_DELTA, MAX_SUBSTEPS } from "../config";
 import { WebPhysicsSolver } from "../physics/WebPhysicsSolver";
+import {
+  AdaptiveQualityController,
+  type AdaptiveQualityLevel,
+} from "../rendering/AdaptiveQuality";
 import { SpiderChoreographer } from "../spider/choreography/index";
 import { loadSpiderRig } from "../spider/SpiderRigLoader";
 import { createWebNetworkTraversal } from "../traversal/index";
@@ -63,7 +67,8 @@ const mobileExperience =
   Math.min(window.innerWidth, window.innerHeight) <= 560;
 
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
-renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, mobileExperience ? 1.35 : 2));
+const fullPixelRatio = Math.min(window.devicePixelRatio || 1, mobileExperience ? 1.35 : 2);
+renderer.setPixelRatio(fullPixelRatio);
 renderer.setClearColor(0x050504, 1);
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -522,6 +527,7 @@ const solver = new WebPhysicsSolver(web.network, {
   iterations: 15,
   maximumStrain: 1.4,
 });
+const fullSolverIterations = solver.settings.iterations;
 const traversal = createWebNetworkTraversal(web.network, FIXED_TIME_STEP);
 const silk = new SilkRenderer(scene, web.network);
 
@@ -2507,8 +2513,34 @@ function resize(): void {
 
 let previous = performance.now();
 let accumulator = 0;
+const adaptiveQuality = new AdaptiveQualityController();
+
+function applyAdaptiveQuality(level: AdaptiveQualityLevel): void {
+  const reducedPixelRatio = mobileExperience ? 1.1 : 1.5;
+  const minimumPixelRatio = mobileExperience ? 0.9 : 1.1;
+  const pixelRatio = level === 0
+    ? fullPixelRatio
+    : Math.min(fullPixelRatio, level === 1 ? reducedPixelRatio : minimumPixelRatio);
+  renderer.setPixelRatio(pixelRatio);
+
+  // XPBD is deliberately less sensitive to iteration count than a spring
+  // solver. This trims CPU work without changing the simulation clock or any
+  // of Vesper's decisions, routes, and timings.
+  solver.settings.iterations = level === 0 ? fullSolverIterations : level === 1 ? 12 : 8;
+
+  // Shadows are the last visible detail to go. Mobile already has no casting
+  // key light, so this emergency step is effectively invisible there.
+  const shadowsEnabled = level < 2;
+  if (renderer.shadowMap.enabled !== shadowsEnabled) {
+    renderer.shadowMap.enabled = shadowsEnabled;
+    if (shadowsEnabled) renderer.shadowMap.needsUpdate = true;
+  }
+}
 
 function frame(now: number): void {
+  const qualityDecision = adaptiveQuality.observe(now, document.hidden);
+  if (qualityDecision) applyAdaptiveQuality(qualityDecision.level);
+
   const realDelta = Math.min((now - previous) / 1000, MAX_FRAME_DELTA);
   previous = now;
   let delta = realDelta;
@@ -2568,6 +2600,7 @@ requestAnimationFrame(frame);
 updateHud();
 window.addEventListener("beforeunload", saveMemory);
 document.addEventListener("visibilitychange", () => {
+  adaptiveQuality.observe(performance.now(), true);
   if (document.hidden) {
     saveMemory();
     return;
