@@ -3,6 +3,12 @@ import * as THREE from 'three';
 const EPSILON = 1e-8;
 const DEFAULT_TOLERANCE = 1e-4;
 const DEFAULT_MAX_ITERATIONS = 18;
+/**
+ * Per-solve blend from the roll-continuous orientation toward the canonical
+ * rest-derived one. Small: at 120 solves/second even 0.1 re-anchors roll
+ * within a fraction of a second while killing frame-to-frame roll snaps.
+ */
+const ROLL_REST_PULL = 0.1;
 
 export interface SpiderIKTarget {
   readonly x: number;
@@ -115,6 +121,13 @@ export interface SpiderIKSolverDefaults extends SpiderIKSolveOptions {}
  * authored left/right mirror conventions.
  */
 export class SpiderIKSolver {
+  /**
+   * Blend each bone's roll from last frame's orientation instead of
+   * re-deriving it from rest, so the mesh cannot whip about the leg axis.
+   * Public and mutable so the leg gym can A/B it live.
+   */
+  rollContinuity = true;
+
   private readonly chains = new Map<string, RuntimeChain>();
   private readonly chainIds: string[] = [];
   private readonly defaults: Required<SpiderIKSolveOptions>;
@@ -928,6 +941,49 @@ export class SpiderIKSolver {
         this.quaternionA,
       );
       this.quaternionC.copy(this.quaternionA).multiply(this.quaternionB).normalize();
+
+      // Roll continuity. The shortest-arc mapping above pins the bone's aim
+      // but leaves its roll about that aim wherever the arc happens to put
+      // it, re-derived from the REST pose every frame — so when the solved
+      // direction swings quickly (or crosses near the rest direction's
+      // antipode during a tight curl), the roll can snap, and the skinned
+      // mesh visibly whips around the leg's own axis. The fix: also build the
+      // orientation by transporting LAST frame's quaternion to the new aim
+      // (same shortest arc, anchored at the previous pose instead of rest).
+      // Both candidates aim the bone identically and differ only by twist,
+      // so a slerp between them blends roll alone: mostly-continuous, with a
+      // steady pull back toward the canonical rest-derived roll so twist can
+      // never drift off anatomically.
+      if (this.rollContinuity) {
+        this.quaternionD.set(
+          chain.previousQuaternions[q],
+          chain.previousQuaternions[q + 1],
+          chain.previousQuaternions[q + 2],
+          chain.previousQuaternions[q + 3],
+        );
+        this.vectorD
+          .set(
+            chain.childDirections[d],
+            chain.childDirections[d + 1],
+            chain.childDirections[d + 2],
+          )
+          .applyQuaternion(this.quaternionD)
+          .normalize();
+        if (isFiniteVector(this.vectorD) && this.vectorD.lengthSq() > EPSILON) {
+          setStableFromUnitVectors(
+            this.vectorD,
+            this.vectorA,
+            this.vectorC.set(0, 0, 1),
+            this.quaternionA,
+          );
+          this.quaternionD.premultiply(this.quaternionA).normalize();
+          if (isFiniteQuaternion(this.quaternionD)) {
+            this.quaternionC.copy(
+              this.quaternionD.slerp(this.quaternionC, ROLL_REST_PULL),
+            ).normalize();
+          }
+        }
+      }
 
       if (enforceLimits && hasLimits(chain.limits, i * 6)) {
         this.quaternionA.copy(this.quaternionB).invert().multiply(this.quaternionC).normalize();
