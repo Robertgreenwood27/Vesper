@@ -17,8 +17,14 @@ import { createWebNetworkTraversal } from "../traversal/index";
 import { createCobweb, DEFAULT_LEGSPAN } from "../web/createCobweb";
 import { createEnclosureLayout } from "../web/enclosureLayout";
 import { DewSystem, Firefly } from "./Atmosphere";
+import {
+  PreyWrappingSystem,
+  type RearLegWorkPose,
+} from "./PreyWrappingSystem";
+import { LegGym } from "./LegGym";
 import { RigDiagnostics } from "./RigDiagnostics";
 import { SilkRenderer } from "./SilkRenderer";
+import { SpiderDroppingSystem } from "./SpiderDroppingSystem";
 import {
   chooseAutonomousBehavior,
   chooseTouchResponse,
@@ -496,6 +502,10 @@ const tuned = (key: string): number | undefined => {
 const feedingTimeScale = THREE.MathUtils.clamp(tuned("feedingScale") ?? 1, 0.05, 4);
 const forceCachedMeal = tuned("cacheMeal") === 1;
 const rigDebugEnabled = tuning.get("rigDebug") === "1";
+// The leg gym freezes the body and drives scripted foot trajectories, so the
+// solver can be stressed and measured without momentum or silk in the picture.
+const legGymEnabled = tuning.get("legGym") === "1";
+let legGym: LegGym | null = null;
 let rigDebugPaused = false;
 let rigDebugSteps = 0;
 let rigDiagnostics: RigDiagnostics | null = null;
@@ -535,6 +545,9 @@ const silk = new SilkRenderer(scene, web.network);
 
 const dew = new DewSystem(scene, web.network, mobileExperience ? 70 : 120);
 const firefly = new Firefly(scene);
+const spiderDroppings = new SpiderDroppingSystem(scene, (worldX, worldZ) =>
+  substrateHeight(worldX - enclosure.centerX, worldZ - enclosure.centerZ),
+);
 const forceDew = tuned("dew") === 1;
 const forceFirefly = tuned("firefly") === 1;
 let dewAnnounced = false;
@@ -581,7 +594,7 @@ const SHOWCASE_CHOREOGRAPHY = {
   bodyWeight: 0.95,
   // Hinge realism for the leg joints past the coxa; the coxa itself stays a
   // free ball-and-socket. See ChoreographyConfig.jointLimitScale.
-  jointLimitScale: 1.35,
+  jointLimitScale: 1.15,
 } as const;
 
 type PetMode =
@@ -642,6 +655,7 @@ let redWatch = false;
 let toastTimer = 0;
 let hudTimer = 0;
 let moth: THREE.Group | null = null;
+let mothWrap: PreyWrappingSystem | null = null;
 let mothAddress: { strandId: string; t: number } | null = null;
 type MothStage =
   | "none"
@@ -656,9 +670,10 @@ let mothStage: MothStage = "none";
 let mothTimer = 0;
 let nextMothTremor = 0;
 let mothSource: "keeper" | "wild" = "keeper";
+let mothFreshScale = 0.98;
 let mothMealProgress = 0;
 let mothFeedingSeconds = 60;
-let mothSubdueSeconds = 4;
+let mothSubdueSeconds = 1.7;
 let mothWrapSeconds = 8;
 let mothCacheSeconds = 14;
 let mothWillCache = false;
@@ -676,8 +691,29 @@ const mothCapturePosition = new THREE.Vector3();
 const mothFeedingAnchor = new THREE.Vector3();
 const mothFrontFeet = new THREE.Vector3();
 const mothFootScratch = new THREE.Vector3();
+const mothWrapAttachments = {
+  leftSpinneret: new THREE.Vector3(),
+  rightSpinneret: new THREE.Vector3(),
+  leftHindFoot: new THREE.Vector3(),
+  rightHindFoot: new THREE.Vector3(),
+};
+const mothWorkContact = new THREE.Vector3();
+const mothWorkTarget = new THREE.Vector3();
+const mothWorkPullPoint = new THREE.Vector3();
+const mothWorkPickup = new THREE.Vector3();
+const mothWorkRest = new THREE.Vector3();
+const mothWorkCoxa = new THREE.Vector3();
+const mothWorkOutward = new THREE.Vector3();
+const mothWorkTangent = new THREE.Vector3();
+const mothWorkParcelCenter = new THREE.Vector3();
+const mothWorkRigScale = new THREE.Vector3();
+const mothWorkWorldUp = new THREE.Vector3(0, 1, 0);
+const mothFilteredWorkTargets = {
+  L4: new THREE.Vector3(),
+  R4: new THREE.Vector3(),
+};
+const mothWorkTargetInitialized = { L4: false, R4: false };
 const homeWorldPosition = new THREE.Vector3();
-const mothRestRotation = new THREE.Euler();
 const feedingJointRotation = new THREE.Quaternion();
 const feedingJointInverse = new THREE.Quaternion();
 const feedingJointOverlays = new Map<THREE.Bone, THREE.Quaternion>();
@@ -886,48 +922,81 @@ function updateHud(): void {
 
 function createMoth(): THREE.Group {
   const group = new THREE.Group();
+  group.name = "moth-parcel";
+  const preyVisual = new THREE.Group();
+  preyVisual.name = "prey-visual";
+  group.add(preyVisual);
+  const bodyMaterial = new THREE.MeshStandardMaterial({
+    color: 0x746351,
+    roughness: 0.94,
+  });
   const body = new THREE.Mesh(
-    new THREE.CapsuleGeometry(0.035, 0.095, 4, 8),
-    new THREE.MeshStandardMaterial({ color: 0x8f806b, roughness: 0.9 }),
+    new THREE.CapsuleGeometry(0.041, 0.112, 5, 10),
+    bodyMaterial,
   );
+  body.name = "moth-abdomen";
+  body.position.x = 0.018;
   body.rotation.z = Math.PI / 2;
-  group.add(body);
-  const wingMaterial = new THREE.MeshBasicMaterial({
-    color: 0xc9bda5,
+  preyVisual.add(body);
+  const thorax = new THREE.Mesh(new THREE.SphereGeometry(0.057, 10, 7), bodyMaterial);
+  thorax.name = "moth-thorax";
+  thorax.position.x = -0.055;
+  thorax.scale.set(1.08, 0.94, 0.9);
+  preyVisual.add(thorax);
+  const head = new THREE.Mesh(
+    new THREE.SphereGeometry(0.037, 9, 6),
+    new THREE.MeshStandardMaterial({ color: 0x55483d, roughness: 0.88 }),
+  );
+  head.name = "moth-head";
+  head.position.x = -0.118;
+  preyVisual.add(head);
+  const wingMaterial = new THREE.MeshStandardMaterial({
+    color: 0x9f9078,
+    roughness: 0.92,
     transparent: true,
-    opacity: 0.72,
+    opacity: 0.7,
     side: THREE.DoubleSide,
   });
   const wingShape = new THREE.Shape();
   wingShape.moveTo(0, 0);
-  wingShape.bezierCurveTo(0.03, 0.12, 0.18, 0.16, 0.2, 0.03);
-  wingShape.bezierCurveTo(0.14, -0.02, 0.05, -0.02, 0, 0);
+  wingShape.bezierCurveTo(0.035, 0.135, 0.2, 0.175, 0.225, 0.035);
+  wingShape.bezierCurveTo(0.16, -0.025, 0.055, -0.02, 0, 0);
+  const veinMaterial = new THREE.LineBasicMaterial({
+    color: 0x766a58,
+    transparent: true,
+    opacity: 0.42,
+  });
   for (const side of [-1, 1]) {
     const wing = new THREE.Mesh(new THREE.ShapeGeometry(wingShape, 8), wingMaterial);
     wing.name = side < 0 ? "wing-left" : "wing-right";
     wing.scale.y = side;
     wing.rotation.y = Math.PI / 2;
-    group.add(wing);
-  }
-  const wrap = new THREE.Group();
-  wrap.name = "silk-wrap";
-  wrap.visible = false;
-  const silkMaterial = new THREE.MeshBasicMaterial({
-    color: 0xe7e1d5,
-    transparent: true,
-    opacity: 0,
-    depthWrite: false,
-  });
-  for (let index = 0; index < 7; index += 1) {
-    const band = new THREE.Mesh(
-      new THREE.TorusGeometry(0.075 + index * 0.004, 0.0035, 5, 20),
-      silkMaterial,
+    const veins = new THREE.LineSegments(
+      new THREE.BufferGeometry().setFromPoints([
+        new THREE.Vector3(0.012, 0.008, 0.001), new THREE.Vector3(0.19, 0.04, 0.001),
+        new THREE.Vector3(0.025, 0.02, 0.001), new THREE.Vector3(0.15, 0.105, 0.001),
+        new THREE.Vector3(0.06, 0.035, 0.001), new THREE.Vector3(0.09, 0.135, 0.001),
+      ]),
+      veinMaterial,
     );
-    band.name = `silk-band-${index}`;
-    band.rotation.set(index * 0.48, index * 0.73, index * 0.31);
-    wrap.add(band);
+    veins.name = "wing-veins";
+    wing.add(veins);
+    preyVisual.add(wing);
   }
-  group.add(wrap);
+  const antennaMaterial = new THREE.LineBasicMaterial({
+    color: 0x69594b,
+    transparent: true,
+    opacity: 0.7,
+  });
+  const antennae = new THREE.LineSegments(
+    new THREE.BufferGeometry().setFromPoints([
+      new THREE.Vector3(-0.14, 0.014, 0), new THREE.Vector3(-0.235, 0.065, 0.025),
+      new THREE.Vector3(-0.14, -0.014, 0), new THREE.Vector3(-0.235, -0.065, -0.025),
+    ]),
+    antennaMaterial,
+  );
+  antennae.name = "moth-antennae";
+  preyVisual.add(antennae);
   const glow = new THREE.PointLight(0xdabf91, 0.32, 1.5, 2);
   group.add(glow);
   return group;
@@ -999,8 +1068,9 @@ function offerMoth(source: "keeper" | "wild" = "keeper"): void {
   }
   moth = createMoth();
   mothSource = source;
+  mothFreshScale = source === "wild" ? 0.82 : 0.98;
   if (source === "keeper") trackEngagement("moth_offered");
-  if (source === "wild") moth.scale.setScalar(0.72);
+  moth.scale.setScalar(mothFreshScale);
   scene.add(moth);
   traversal.getWorldPosition(mothAddress, mothWorldPosition);
   moth.position.copy(mothWorldPosition);
@@ -1011,13 +1081,44 @@ function offerMoth(source: "keeper" | "wild" = "keeper"): void {
   nextMothTremor = 0.15;
   mothMealProgress = 0;
   mothFeedingSeconds = (mothSource === "wild" ? 38 + Math.random() * 18 : 52 + Math.random() * 28) * feedingTimeScale;
-  mothSubdueSeconds = (3.2 + Math.random() * 1.8) * feedingTimeScale;
+  mothSubdueSeconds = Math.max(0.8, (1.45 + Math.random() * 0.45) * feedingTimeScale);
   mothWrapSeconds = (6.5 + Math.random() * 3.5) * feedingTimeScale;
   mothCacheSeconds = (11 + Math.random() * 12) * feedingTimeScale;
   mothWillCache = forceCachedMeal || Math.random() < 0.38;
   mothWasCached = false;
   mothCacheAtProgress = 0.3 + Math.random() * 0.28;
   mothFeedingNote = 0;
+  mothWrap = new PreyWrappingSystem(scene, moth, {
+    // A conservative central envelope plus body and wing lobes. Silk follows
+    // the inflated union, so it catches the silhouette without sinking into
+    // fragile render geometry or tracing every wing-vein crevice.
+    radii: new THREE.Vector3(0.13, 0.1, 0.145),
+    surfaceLobes: [
+      {
+        center: new THREE.Vector3(0.005, 0, 0),
+        radii: new THREE.Vector3(0.16, 0.058, 0.064),
+      },
+      {
+        center: new THREE.Vector3(-0.012, 0.058, -0.09),
+        radii: new THREE.Vector3(0.062, 0.125, 0.17),
+        rotation: new THREE.Quaternion().setFromAxisAngle(
+          new THREE.Vector3(1, 0, 0),
+          -0.16,
+        ),
+      },
+      {
+        center: new THREE.Vector3(-0.012, -0.058, -0.09),
+        radii: new THREE.Vector3(0.062, 0.125, 0.17),
+        rotation: new THREE.Quaternion().setFromAxisAngle(
+          new THREE.Vector3(1, 0, 0),
+          0.16,
+        ),
+      },
+    ],
+    targetDuration: mothWrapSeconds,
+    rotationalInertia: source === "wild" ? 0.92 : 1.28,
+    mobile: mobileExperience,
+  });
   // Prey instinct owns the hunt; the relationship only shades how long she
   // reads the vibration before committing. A hungry, food-driven, settled
   // spider starts sooner; a stressed or wary one listens longer.
@@ -1044,33 +1145,28 @@ function offerMoth(source: "keeper" | "wild" = "keeper"): void {
 
 function removeMoth(): void {
   if (!moth) return;
+  mothWrap?.dispose();
+  mothWrap = null;
   scene.remove(moth);
+  const geometries = new Set<THREE.BufferGeometry>();
+  const materials = new Set<THREE.Material>();
   moth.traverse((child) => {
-    if (!(child instanceof THREE.Mesh)) return;
-    child.geometry.dispose();
-    const materials = Array.isArray(child.material) ? child.material : [child.material];
-    for (const material of materials) material.dispose();
+    if (!(child instanceof THREE.Mesh || child instanceof THREE.Line || child instanceof THREE.Points)) return;
+    geometries.add(child.geometry);
+    const objectMaterials = Array.isArray(child.material) ? child.material : [child.material];
+    for (const material of objectMaterials) materials.add(material);
   });
+  for (const geometry of geometries) geometry.dispose();
+  for (const material of materials) material.dispose();
   moth = null;
   mothAddress = null;
 }
 
-function setMothWrap(amount: number, spinning = false): void {
+/** The cocoon keeps its size while the consumed insect gradually collapses within it. */
+function updateMothContentsScale(): void {
   if (!moth) return;
-  const wrap = moth.getObjectByName("silk-wrap");
-  if (!wrap) return;
-  const opacity = THREE.MathUtils.clamp(amount, 0, 1);
-  wrap.visible = opacity > 0.01;
-  // The bands only tumble while she is actively winding silk on. A finished
-  // parcel is a still parcel.
-  if (spinning) wrap.rotation.set(habitatTime * 0.45, habitatTime * 0.31, habitatTime * 0.37);
-  wrap.traverse((child) => {
-    if (!(child instanceof THREE.Mesh)) return;
-    const materials = Array.isArray(child.material) ? child.material : [child.material];
-    for (const material of materials) {
-      if (material instanceof THREE.MeshBasicMaterial) material.opacity = opacity * 0.62;
-    }
-  });
+  const preyVisual = moth.getObjectByName("prey-visual");
+  preyVisual?.scale.setScalar(THREE.MathUtils.lerp(1, 0.68, mothMealProgress));
 }
 
 /** Remove last frame's additive feeding pose before the locomotion rig runs. */
@@ -1083,7 +1179,11 @@ function removeFeedingLimbPose(): void {
 }
 
 /** Adds small, alternating work motions without replacing the rig's grounded pose. */
-function applyFeedingLimbPose(intensity: number, speed: number): void {
+function applyFeedingLimbPose(
+  intensity: number,
+  speed: number,
+  rearLegWork?: RearLegWorkPose,
+): void {
   if (!loadedRig || intensity <= 0) return;
   const legIds = ["L1", "R1", "L4", "R4"] as const;
   for (let legIndex = 0; legIndex < legIds.length; legIndex += 1) {
@@ -1094,10 +1194,23 @@ function applyFeedingLimbPose(intensity: number, speed: number): void {
     for (let jointIndex = 0; jointIndex < jointCount; jointIndex += 1) {
       const bone = leg.joints[jointIndex];
       const phase = habitatTime * speed + legIndex * 1.7 + jointIndex * 0.8;
-      const amplitude = intensity * (0.12 - jointIndex * 0.025);
+      const isRearLeg = legId === "L4" || legId === "R4";
+      const isWorkingRearLeg = Boolean(
+        rearLegWork
+        && ((legId === "L4" && rearLegWork.activeSide === "left")
+          || (legId === "R4" && rearLegWork.activeSide === "right")),
+      );
+      // The active rear chain is solved to a real world target below. Never
+      // record an additive overlay on those same bones: inverting it next
+      // frame would corrupt the IK result left by the presentation pass.
+      if (isWorkingRearLeg) continue;
+      const idleMotion = Math.sin(phase) * intensity * (0.12 - jointIndex * 0.025);
+      const angle = isRearLeg && rearLegWork
+        ? Math.sin(phase) * 0.012
+        : idleMotion;
       feedingJointRotation.setFromAxisAngle(
         loadedRig.axes.boneBend,
-        Math.sin(phase) * amplitude * side,
+        angle * side,
       );
       bone.quaternion.multiply(feedingJointRotation);
       feedingJointOverlays.set(bone, feedingJointRotation.clone());
@@ -1106,7 +1219,98 @@ function applyFeedingLimbPose(intensity: number, speed: number): void {
   loadedRig.rootObject.updateMatrixWorld(true);
 }
 
-function positionMothAtMouth(stage: MothStage, wrapAmount: number): void {
+/**
+ * Presentation-only leg-IV work. Semantic contact and load remain untouched;
+ * this runs after locomotion, so the web solver stays stable while the visible
+ * rear foot genuinely reaches from its live contact to spinneret and prey.
+ */
+function solveWrappingRearLegIK(work: RearLegWorkPose, dt: number): void {
+  if (!loadedRig || !choreographer || !moth || !mothWrap) return;
+  if (!mothWrap.getWorkingContactWorld(mothWorkContact)) return;
+  const legId = work.activeSide === "left" ? "L4" : "R4";
+  const otherLegId = legId === "L4" ? "R4" : "L4";
+  mothWorkTargetInitialized[otherLegId] = false;
+  const leg = loadedRig.legs[legId];
+  const semanticContact = choreographer.contacts.get(legId);
+  if (semanticContact?.hasResolvedWorldPosition) {
+    mothWorkRest.set(
+      semanticContact.worldPosition.x,
+      semanticContact.worldPosition.y,
+      semanticContact.worldPosition.z,
+    );
+  } else {
+    leg.footHome.getWorldPosition(mothWorkRest);
+  }
+  mothWorkPickup.copy(
+    work.activeSide === "left"
+      ? mothWrapAttachments.leftSpinneret
+      : mothWrapAttachments.rightSpinneret,
+  );
+  moth.getWorldPosition(mothWorkParcelCenter);
+  mothWorkOutward.subVectors(mothWorkContact, mothWorkParcelCenter).normalize();
+  mothWorkTangent.subVectors(mothWorkPickup, mothWorkContact);
+  mothWorkTangent.addScaledVector(
+    mothWorkOutward,
+    -mothWorkTangent.dot(mothWorkOutward),
+  );
+  if (mothWorkTangent.lengthSq() < 1e-6) {
+    mothWorkTangent.subVectors(mothWorkPickup, mothWorkContact);
+    mothWorkTangent.addScaledVector(
+      mothWorkOutward,
+      -mothWorkTangent.dot(mothWorkOutward),
+    );
+  }
+  if (mothWorkTangent.lengthSq() < 1e-6) {
+    mothWorkTangent.crossVectors(mothWorkOutward, mothWorkWorldUp);
+  }
+  mothWorkTangent.normalize();
+  mothWorkPullPoint
+    .copy(mothWorkContact)
+    .addScaledVector(mothWorkOutward, 0.04)
+    .addScaledVector(mothWorkTangent, 0.105);
+
+  if (work.action === "searching") {
+    mothWorkTarget.lerpVectors(mothWorkRest, mothWorkPickup, work.reach);
+  } else if (work.action === "grabbing") {
+    mothWorkTarget.copy(mothWorkPickup);
+  } else if (work.action === "pulling") {
+    const easedPull = work.pull * work.pull * (3 - 2 * work.pull);
+    mothWorkTarget.lerpVectors(mothWorkPickup, mothWorkPullPoint, easedPull);
+  } else if (work.action === "releasing") {
+    mothWorkTarget.copy(mothWorkPullPoint);
+  } else {
+    const reset = 1 - THREE.MathUtils.clamp(work.reach / 0.42, 0, 1);
+    mothWorkTarget.lerpVectors(mothWorkPullPoint, mothWorkRest, reset);
+  }
+
+  const filteredTarget = mothFilteredWorkTargets[legId];
+  if (!mothWorkTargetInitialized[legId]) {
+    leg.footTip.getWorldPosition(filteredTarget);
+    mothWorkTargetInitialized[legId] = true;
+  }
+  filteredTarget.lerp(mothWorkTarget, 1 - Math.exp(-26 * dt));
+
+  leg.joints[0].getWorldPosition(mothWorkCoxa);
+  mothWorkOutward.subVectors(filteredTarget, mothWorkCoxa);
+  loadedRig.rootObject.getWorldScale(mothWorkRigScale);
+  const reachScale = (mothWorkRigScale.x + mothWorkRigScale.y + mothWorkRigScale.z) / 3;
+  const minimumReach = leg.reach.min * reachScale * 1.05;
+  const maximumReach = leg.reach.max * reachScale * 0.9;
+  const targetDistance = THREE.MathUtils.clamp(
+    mothWorkOutward.length(),
+    minimumReach,
+    maximumReach,
+  );
+  if (mothWorkOutward.lengthSq() > 1e-8) {
+    filteredTarget.copy(mothWorkCoxa).add(
+      mothWorkOutward.normalize().multiplyScalar(targetDistance),
+    );
+  }
+  choreographer.ik.solve(legId, filteredTarget);
+  loadedRig.rootObject.updateMatrixWorld(true);
+}
+
+function positionMothAtMouth(stage: MothStage): void {
   if (!moth || !loadedRig) return;
   loadedRig.head.getWorldPosition(mothFeedingAnchor);
   loadedRig.footTips.L1.getWorldPosition(mothFrontFeet);
@@ -1117,7 +1321,7 @@ function positionMothAtMouth(stage: MothStage, wrapAmount: number): void {
   // Distinct stages, distinct energy: a violent pinned struggle, a deliberate
   // rotation while silk goes on, then stillness. During the long feed the
   // parcel is held against her mouthparts and barely moves at all.
-  const tumble = stage === "subduing" ? 1 : stage === "wrapping" ? 0.62 : 0.035;
+  const tumble = stage === "subduing" ? 0.5 : stage === "wrapping" ? 0.18 : 0.035;
   mothWorldPosition.copy(mothFeedingAnchor);
   mothWorldPosition.x += Math.sin(habitatTime * 7.1) * 0.055 * tumble;
   mothWorldPosition.y += Math.cos(habitatTime * 8.3) * 0.035 * tumble;
@@ -1131,27 +1335,8 @@ function positionMothAtMouth(stage: MothStage, wrapAmount: number): void {
     moth.position.copy(mothWorldPosition);
   }
 
-  if (stage === "feeding") {
-    // Frozen at whatever orientation the wrap finished in, plus a drift so
-    // slow it reads as her breath moving the parcel rather than the parcel
-    // moving itself.
-    moth.rotation.set(
-      mothRestRotation.x + Math.sin(habitatTime * 0.5) * 0.02,
-      mothRestRotation.y + Math.sin(habitatTime * 0.37 + 1.3) * 0.016,
-      mothRestRotation.z,
-    );
-  } else {
-    const spin = stage === "subduing" ? 9 : 5;
-    moth.rotation.set(
-      habitatTime * spin * 0.73,
-      habitatTime * spin,
-      habitatTime * spin * 0.51,
-    );
-    // Track continuously so the freeze into feeding is seamless.
-    mothRestRotation.copy(moth.rotation);
-  }
-  moth.scale.setScalar(THREE.MathUtils.lerp(0.72, 0.46, mothMealProgress));
-  setMothWrap(wrapAmount, stage === "subduing" || stage === "wrapping");
+  updateMothContentsScale();
+  moth.updateMatrixWorld(true);
 }
 
 function finishMothMeal(): void {
@@ -1391,6 +1576,13 @@ async function boot(): Promise<void> {
     setStatus("She cannot find safe footing in this web.");
     return;
   }
+  if (tuning.get("poop") === "1") {
+    window.setTimeout(() => spiderDroppings.dropNow(rig.spinnerets.center), 3_000);
+  }
+  if (legGymEnabled && choreographer) {
+    legGym = new LegGym(rig, choreographer.ik);
+    setStatus("Leg gym: body frozen, feet on scripted trajectories.");
+  }
   traversal.getWorldPosition({ strandId: web.homeStrandId, t: 0.5 }, homeWorldPosition);
   setPetMode(
     "watching",
@@ -1427,17 +1619,23 @@ if (import.meta.env.DEV) {
     step(count: number) {
       for (let i = 0; i < count; i += 1) {
         solver.step(FIXED_TIME_STEP);
-        choreographer?.update(FIXED_TIME_STEP);
+        if (legGym) legGym.update(FIXED_TIME_STEP);
+        else choreographer?.update(FIXED_TIME_STEP);
       }
       return choreographer?.state;
     },
+    gym: () => legGym?.metrics() ?? null,
+    gymReset: () => legGym?.reset(),
     state: () => choreographer?.state,
     feeding: () => ({
       stage: mothStage,
       progress: Number(mothMealProgress.toFixed(3)),
       willCache: mothWillCache,
       wasCached: mothWasCached,
+      wrapping: mothWrap?.snapshot ?? null,
     }),
+    poop: () => loadedRig ? spiderDroppings.dropNow(loadedRig.spinnerets.center) : false,
+    dropping: () => spiderDroppings.snapshot,
     web: () => ({
       retreatNodeId: web.retreatNodeId,
       farNodeId: web.farNodeId,
@@ -2108,14 +2306,23 @@ function updateMoth(dt: number): void {
   traversal.getWorldPosition(mothAddress, mothWorldPosition);
   if (mothIsOnWeb) moth.position.copy(mothWorldPosition);
 
-  const leftWing = moth.children.find((child) => child.name === "wing-left");
-  const rightWing = moth.children.find((child) => child.name === "wing-right");
+  const leftWing = moth.getObjectByName("wing-left");
+  const rightWing = moth.getObjectByName("wing-right");
   if (mothStage === "noticed" || mothStage === "hunting") {
     moth.position.y += Math.sin(habitatTime * 11) * 0.012;
     moth.rotation.y = Math.sin(habitatTime * 7) * 0.16;
     const flutter = Math.sin(habitatTime * 34) * 0.55;
     leftWing?.rotation.set(0, Math.PI / 2 + flutter, 0);
     rightWing?.rotation.set(0, Math.PI / 2 - flutter, 0);
+  } else if (mothStage === "subduing" || mothStage === "wrapping") {
+    const wrapCoverage = mothWrap?.snapshot.coverage ?? 0;
+    const subdueFreedom = mothStage === "subduing"
+      ? 1 - THREE.MathUtils.clamp(mothTimer / Math.max(0.01, mothSubdueSeconds), 0, 1) * 0.58
+      : 0.42 * Math.pow(1 - wrapCoverage, 1.7);
+    const flutter = Math.sin(habitatTime * 31) * 0.34 * subdueFreedom;
+    const pinnedAngle = THREE.MathUtils.lerp(0.12, 0.025, wrapCoverage);
+    leftWing?.rotation.set(0, Math.PI / 2 + pinnedAngle + flutter, 0);
+    rightWing?.rotation.set(0, Math.PI / 2 - pinnedAngle - flutter, 0);
   } else {
     leftWing?.rotation.set(0, Math.PI / 2 + 0.12, 0);
     rightWing?.rotation.set(0, Math.PI / 2 - 0.12, 0);
@@ -2149,7 +2356,7 @@ function updateMoth(dt: number): void {
     mothTimer = 0;
     mothCapturePosition.copy(moth.position);
     choreographer.setIntent({ kind: "freeze" });
-    moth.scale.setScalar(0.72);
+    moth.scale.setScalar(mothFreshScale);
     setPetMode(
       "feeding",
       `${memory.name} pins the moth with her front legs. The web becomes a workbench.`,
@@ -2159,7 +2366,8 @@ function updateMoth(dt: number): void {
   }
 
   if (mothStage === "subduing") {
-    positionMothAtMouth("subduing", 0.08);
+    positionMothAtMouth("subduing");
+    mothWrap?.updateSubduing(dt);
     applyFeedingLimbPose(1, 10.5);
     if (mothTimer >= mothSubdueSeconds) {
       mothStage = "wrapping";
@@ -2171,10 +2379,28 @@ function updateMoth(dt: number): void {
       );
     }
   } else if (mothStage === "wrapping") {
-    const wrapProgress = THREE.MathUtils.clamp(mothTimer / Math.max(0.01, mothWrapSeconds), 0, 1);
-    positionMothAtMouth("wrapping", wrapProgress);
-    applyFeedingLimbPose(0.85, 7);
-    if (mothTimer >= mothWrapSeconds) {
+    positionMothAtMouth("wrapping");
+    if (loadedRig) {
+      loadedRig.spinnerets.left.getWorldPosition(mothWrapAttachments.leftSpinneret);
+      loadedRig.spinnerets.right.getWorldPosition(mothWrapAttachments.rightSpinneret);
+      loadedRig.footTips.L4.getWorldPosition(mothWrapAttachments.leftHindFoot);
+      loadedRig.footTips.R4.getWorldPosition(mothWrapAttachments.rightHindFoot);
+    }
+    const plannedWrap = mothWrap?.advanceWrapping(dt, mothWrapAttachments);
+    applyFeedingLimbPose(0.85, 7, plannedWrap?.leg);
+    if (plannedWrap) solveWrappingRearLegIK(plannedWrap.leg, dt);
+    if (loadedRig) {
+      loadedRig.spinnerets.left.getWorldPosition(mothWrapAttachments.leftSpinneret);
+      loadedRig.spinnerets.right.getWorldPosition(mothWrapAttachments.rightSpinneret);
+      loadedRig.footTips.L4.getWorldPosition(mothWrapAttachments.leftHindFoot);
+      loadedRig.footTips.R4.getWorldPosition(mothWrapAttachments.rightHindFoot);
+    }
+    const wrapState = mothWrap?.completeWrappingStep(dt, mothWrapAttachments);
+    const coverageSolved = wrapState?.complete && mothTimer >= mothWrapSeconds * 0.65;
+    if (coverageSolved || mothTimer >= mothWrapSeconds * 1.5) {
+      mothWrap?.seal();
+      mothWorkTargetInitialized.L4 = false;
+      mothWorkTargetInitialized.R4 = false;
       mothStage = "feeding";
       mothTimer = 0;
       setPetMode(
@@ -2185,8 +2411,9 @@ function updateMoth(dt: number): void {
       announce("The moth is wrapped. The long meal begins");
     }
   } else if (mothStage === "feeding") {
-    positionMothAtMouth("feeding", 1);
+    positionMothAtMouth("feeding");
     applyFeedingLimbPose(0.32, 3.2);
+    mothWrap?.settle(dt);
     mothMealProgress = Math.min(1, mothMealProgress + dt / Math.max(0.01, mothFeedingSeconds));
 
     if (mothFeedingNote === 0 && mothMealProgress > 0.36) {
@@ -2211,8 +2438,7 @@ function updateMoth(dt: number): void {
       mothWasCached = true;
       traversal.getWorldPosition(mothAddress, mothWorldPosition);
       moth.position.copy(mothWorldPosition);
-      moth.scale.setScalar(THREE.MathUtils.lerp(0.72, 0.46, mothMealProgress));
-      setMothWrap(1);
+      updateMothContentsScale();
       choreographer.setIntent({ kind: "travel", to: { kind: "node", nodeId: web.retreatNodeId } });
       setPetMode(
         "retreating",
@@ -2225,8 +2451,7 @@ function updateMoth(dt: number): void {
 
     if (mothMealProgress >= 1) finishMothMeal();
   } else if (mothStage === "cached") {
-    moth.scale.setScalar(THREE.MathUtils.lerp(0.72, 0.46, mothMealProgress));
-    setMothWrap(1);
+    updateMothContentsScale();
     if (mothTimer >= mothCacheSeconds) {
       mothStage = "returning";
       mothTimer = 0;
@@ -2242,8 +2467,7 @@ function updateMoth(dt: number): void {
       );
     }
   } else if (mothStage === "returning") {
-    moth.scale.setScalar(THREE.MathUtils.lerp(0.72, 0.46, mothMealProgress));
-    setMothWrap(1);
+    updateMothContentsScale();
     if (loadedRig) loadedRig.rootObject.getWorldPosition(petWorldPosition);
     const reachedCache = loadedRig ? petWorldPosition.distanceTo(mothWorldPosition) < 0.82 : false;
     if (reachedCache || choreographer.state.arrived || mothTimer > 12 * feedingTimeScale) {
@@ -2556,7 +2780,8 @@ function frame(now: number): void {
   let steps = 0;
   while (accumulator >= FIXED_TIME_STEP && steps < MAX_SUBSTEPS) {
     solver.step(FIXED_TIME_STEP);
-    choreographer?.update(FIXED_TIME_STEP);
+    if (legGym) legGym.update(FIXED_TIME_STEP);
+    else choreographer?.update(FIXED_TIME_STEP);
     accumulator -= FIXED_TIME_STEP;
     steps += 1;
   }
@@ -2564,12 +2789,19 @@ function frame(now: number): void {
     accumulator = 0;
   }
 
-  updateMoth(delta);
-  updateAutonomy(delta);
-  updateAtmosphere(delta);
-  updateWebSense(delta);
+  if (!legGym) {
+    updateMoth(delta);
+    updateAutonomy(delta);
+    updateAtmosphere(delta);
+    updateWebSense(delta);
+  }
   updateFreshSilk(delta);
   updateEyeShine(delta);
+  spiderDroppings.update(
+    delta,
+    loadedRig?.spinnerets.center ?? null,
+    !legGym && mothStage === "none",
+  );
   if (toastTimer > 0) {
     toastTimer -= delta;
     if (toastTimer <= 0) toast.classList.remove("visible");

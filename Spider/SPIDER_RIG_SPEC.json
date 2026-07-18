@@ -95,27 +95,27 @@
   "reach_units": {
     "note": "Distance from Coxa head to FootTip head, in model units. 'max' = fully extended (sum of segment lengths). 'comfortable' = rest-pose distance. 'min' = approximate fully-compressed reach (~0.35 x max, validate in engine).",
     "per_leg": {
-      "L1": {"max": 0.951, "comfortable": 0.770, "min": 0.333},
-      "L2": {"max": 0.885, "comfortable": 0.649, "min": 0.310},
-      "L3": {"max": 0.873, "comfortable": 0.667, "min": 0.306},
-      "L4": {"max": 0.973, "comfortable": 0.827, "min": 0.341},
-      "R1": {"max": 0.950, "comfortable": 0.770, "min": 0.333},
-      "R2": {"max": 0.889, "comfortable": 0.649, "min": 0.311},
-      "R3": {"max": 0.878, "comfortable": 0.667, "min": 0.307},
-      "R4": {"max": 0.973, "comfortable": 0.827, "min": 0.341}
+      "L1": {"max": 0.861, "comfortable": 0.770, "min": 0.301},
+      "L2": {"max": 0.859, "comfortable": 0.649, "min": 0.301},
+      "L3": {"max": 0.891, "comfortable": 0.667, "min": 0.312},
+      "L4": {"max": 0.976, "comfortable": 0.827, "min": 0.342},
+      "R1": {"max": 0.861, "comfortable": 0.770, "min": 0.301},
+      "R2": {"max": 0.859, "comfortable": 0.649, "min": 0.301},
+      "R3": {"max": 0.891, "comfortable": 0.667, "min": 0.312},
+      "R4": {"max": 0.976, "comfortable": 0.827, "min": 0.342}
     },
-    "aggregate": {"max_reach": 0.97, "comfortable_reach": 0.72, "min_compressed_reach": 0.32}
+    "aggregate": {"max_reach": 0.976, "comfortable_reach": 0.728, "min_compressed_reach": 0.314}
   },
 
   "segment_lengths_model_units": {
-    "L1": {"Coxa": 0.137, "Femur": 0.321, "Patella": 0.055, "Tibia": 0.212, "Metatarsus": 0.227},
-    "L2": {"Coxa": 0.147, "Femur": 0.303, "Patella": 0.064, "Tibia": 0.202, "Metatarsus": 0.170},
-    "L3": {"Coxa": 0.154, "Femur": 0.318, "Patella": 0.059, "Tibia": 0.217, "Metatarsus": 0.124},
-    "L4": {"Coxa": 0.158, "Femur": 0.222, "Patella": 0.192, "Tibia": 0.062, "Metatarsus": 0.205, "Tarsus": 0.135},
-    "R1": {"Coxa": 0.136, "Femur": 0.321, "Patella": 0.055, "Tibia": 0.212, "Metatarsus": 0.227},
-    "R2": {"Coxa": 0.145, "Femur": 0.303, "Patella": 0.064, "Tibia": 0.202, "Metatarsus": 0.175},
-    "R3": {"Coxa": 0.152, "Femur": 0.318, "Patella": 0.059, "Tibia": 0.217, "Metatarsus": 0.132},
-    "R4": {"Coxa": 0.156, "Femur": 0.222, "Patella": 0.192, "Tibia": 0.062, "Metatarsus": 0.205, "Tarsus": 0.137}
+    "L1": {"Coxa": 0.039830, "Femur": 0.322079, "Patella": 0.052521, "Tibia": 0.209250, "Metatarsus": 0.237378},
+    "L2": {"Coxa": 0.050580, "Femur": 0.303440, "Patella": 0.061140, "Tibia": 0.201080, "Metatarsus": 0.242763},
+    "L3": {"Coxa": 0.064348, "Femur": 0.321967, "Patella": 0.054778, "Tibia": 0.218658, "Metatarsus": 0.231044},
+    "L4": {"Coxa": 0.065890, "Femur": 0.226365, "Patella": 0.186827, "Tibia": 0.061354, "Metatarsus": 0.203823, "Tarsus": 0.232108},
+    "R1": {"Coxa": 0.039905, "Femur": 0.321778, "Patella": 0.052827, "Tibia": 0.209250, "Metatarsus": 0.237371},
+    "R2": {"Coxa": 0.051549, "Femur": 0.302407, "Patella": 0.061431, "Tibia": 0.200897, "Metatarsus": 0.242885},
+    "R3": {"Coxa": 0.065853, "Femur": 0.320801, "Patella": 0.055322, "Tibia": 0.217939, "Metatarsus": 0.231027},
+    "R4": {"Coxa": 0.065989, "Femur": 0.226365, "Patella": 0.186827, "Tibia": 0.061353, "Metatarsus": 0.203632, "Tarsus": 0.232252}
   },
 
   "neutral_pose": {

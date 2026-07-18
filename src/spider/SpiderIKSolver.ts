@@ -9,6 +9,11 @@ const DEFAULT_MAX_ITERATIONS = 18;
  * within a fraction of a second while killing frame-to-frame roll snaps.
  */
 const ROLL_REST_PULL = 0.1;
+// Amplify the repaired rig's authored off-axis arch when building the preferred
+// positional seed. A value of 1 would reproduce the neutral chain exactly.
+// The slightly stronger pole lifts the femur/patella ridge toward the body-up
+// side while FABRIK still preserves every segment length and exact foot target.
+const PREFERRED_ARCH_GAIN = 1.28;
 
 export interface SpiderIKTarget {
   readonly x: number;
@@ -645,7 +650,12 @@ export class SpiderIKSolver {
     const longitudinalScale = restEndLength > EPSILON
       ? clampFinite(targetDistance / restEndLength, 1, 0.2, 1.4)
       : 1;
-    const perpendicularScale = clampFinite(0.72 + longitudinalScale * 0.28, 1, 0.55, 1.12);
+    const perpendicularScale = clampFinite(
+      (0.72 + longitudinalScale * 0.28) * PREFERRED_ARCH_GAIN,
+      PREFERRED_ARCH_GAIN,
+      0.72,
+      1.38,
+    );
 
     for (let i = 0; i <= chain.drivenCount; i += 1) {
       const p = i * 3;
@@ -669,7 +679,14 @@ export class SpiderIKSolver {
 
   private seedTowardPreferredPose(chain: RuntimeChain, bendBias: number): void {
     if (bendBias <= 0) return;
-    const seedStrength = Math.min(0.18, bendBias * 0.22);
+    // The repaired rig now provides the authoritative fold for every joint.
+    // Start positional IK from that target-aimed rest shape instead of mostly
+    // inheriting last frame's solved polyline. FABRIK has several equally valid
+    // solutions for a many-segment leg; seeding from the previous solution made
+    // a transient backward knee into a stable, jiggly branch that persisted
+    // indefinitely. Roll continuity is handled separately in applySolvedPose,
+    // so resetting the positional branch here does not reintroduce twist snaps.
+    const seedStrength = Math.min(1, bendBias);
     const positions = chain.positions;
     const preferred = chain.preferredPositions;
     for (let i = 1; i < chain.drivenCount; i += 1) {

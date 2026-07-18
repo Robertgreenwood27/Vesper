@@ -36,6 +36,32 @@ import { Swing } from "./StepMotion";
 const REACH_LIMIT = 0.98;
 
 /**
+ * The repaired front chains are about 9.5% shorter than the original rig while
+ * their FootHome references stayed at the old distance. Without a stance
+ * correction L1/R1 sit at 89% reach before gait offsets and about 93% live,
+ * flattening their knee arch into a crab-spider silhouette.
+ */
+const FRONT_STANCE_REACH = 0.81;
+const FRONT_WORKING_REACH = 0.86;
+const FRONT_OUTWARD_STEP = 0.015;
+const DEFAULT_OUTWARD_STEP = 0.055;
+
+/**
+ * Plan-view leg sectors measured away from forward toward each leg's own side.
+ * The authored L2/R2 and L3/R3 homes are almost perpendicular to the body
+ * (about 75 and 107 degrees), which makes the resting silhouette laterigrade --
+ * the radial, hand-like stance of a crab spider. Pull the middle pairs toward
+ * the longitudinal axis while leaving the already-correct leading and trailing
+ * pairs essentially unchanged.
+ */
+const LEG_SECTOR_DEGREES: Readonly<Record<"1" | "2" | "3" | "4", number>> = {
+  "1": 15,
+  "2": 55,
+  "3": 125,
+  "4": 150,
+};
+
+/**
  * Absolute floor on planted feet, used only to break a deadlock.
  *
  * `minimumPlantedFeet` governs *voluntary* stepping and is there to keep the
@@ -204,21 +230,12 @@ export class SpiderChoreographer {
     ) as Record<SpiderLegId, (typeof this.rig.legs)[SpiderLegId]["reach"]>;
     this.contacts = createBlackWidowFootContacts(reachByLeg);
 
-    // Anatomical joint behavior, in two regimes. The coxa — where the leg meets
-    // the body — is a ball-and-socket and is left entirely free: it needs the
-    // whole hemisphere to swing the leg fore, aft, up, down, and out, and it is
-    // the joint that absorbs whatever rotation the rest of the chain refuses.
-    // Every joint past it is treated as a hinge — but a hinge is enforced by
-    // what it *forbids*, not what it allows: sideways swing and twist are held
-    // to the spec's tight ranges, while flex/extend about the bend axis stays
-    // free. Clamping bend is what tears the mesh: the authored bend ranges are
-    // wide enough (tibia -60°..+20°, ×scale) that adjacent joints can legally
-    // fold against each other into a zig-zag, and the CCD contact-recovery pass
-    // drives them onto exactly those boundaries — every euler angle reads
-    // "within limits" while segment directions reverse by 90-135° and the
-    // skinned joints visibly dislocate. FABRIK's preferred-pose bias already
-    // keeps bend in the natural range; the clamps only need to stop splay and
-    // corkscrew, which swing and twist do.
+    // Constrain every joint relative to the repaired rest pose, including the
+    // coxa at the body. The old rig needed a completely free coxa to absorb its
+    // misplaced rest bones; with the repaired rig that freedom lets a front leg
+    // choose a 90-110 degree sideways root turn even while every distal hinge is
+    // legal. A coxa is multi-axis, but it still has an anatomical sector, and the
+    // authored bend/twist/swing ranges preserve that sector symmetrically.
     const scale = this.config.jointLimitScale;
     this.ik = new SpiderIKSolver(
       SPIDER_LEG_IDS.map((id) => ({
@@ -231,15 +248,12 @@ export class SpiderChoreographer {
         },
         jointLimits:
           scale > 0
-            ? this.rig.legs[id].jointLimits.map((limit, jointIndex) =>
-                jointIndex === 0
-                  ? undefined
-                  : {
-                      swingZ: { min: limit.swing_z[0] * scale, max: limit.swing_z[1] * scale },
-                      twistY: { min: limit.twist_y[0] * scale, max: limit.twist_y[1] * scale },
-                      unit: "degrees" as const,
-                    },
-              )
+            ? this.rig.legs[id].jointLimits.map((limit) => ({
+                bendX: { min: limit.bend_x[0] * scale, max: limit.bend_x[1] * scale },
+                swingZ: { min: limit.swing_z[0] * scale, max: limit.swing_z[1] * scale },
+                twistY: { min: limit.twist_y[0] * scale, max: limit.twist_y[1] * scale },
+                unit: "degrees" as const,
+              }))
             : undefined,
       })),
       { bendBias: 1, maxIterations: 12, enforceJointLimits: scale > 0 },
@@ -380,7 +394,7 @@ export class SpiderChoreographer {
     let planted = 0;
     for (const legId of SPIDER_LEG_IDS) {
       const leg = this.rig.legs[legId];
-      leg.footHome.getWorldPosition(this.aim);
+      this.stanceHome(legId, this.aim);
       leg.chain[0].getWorldPosition(this.coxa);
 
       const foothold = this.footholds.find({
@@ -508,7 +522,11 @@ export class SpiderChoreographer {
     this.cinematicFeet.clear();
     this.rig.rootObject.updateMatrixWorld(true);
     for (const legId of SPIDER_LEG_IDS) {
-      const position = this.rig.legs[legId].footTip.getWorldPosition(new THREE.Vector3());
+      // Start from the symmetric authored performance stance. Seeding from the
+      // last semantic silk contact made the first visible pose inherit arbitrary
+      // environment asymmetry -- one patella could begin sharply hiked while its
+      // mirror was almost straight, even though the source bones match.
+      const position = this.stanceHome(legId, new THREE.Vector3());
       this.cinematicFeet.set(legId, {
         position,
         start: position.clone(),
@@ -591,7 +609,7 @@ export class SpiderChoreographer {
     for (const legId of SPIDER_LEG_IDS) {
       const state = this.cinematicFeet.get(legId)!;
       if (state.moving) movingFeet += 1;
-      this.rig.legs[legId].footHome.getWorldPosition(this.aim);
+      this.stanceHome(legId, this.aim);
       worstLag = Math.max(worstLag, state.position.distanceTo(this.aim));
     }
 
@@ -630,14 +648,14 @@ export class SpiderChoreographer {
       leg.chain[0].getWorldPosition(this.coxa);
       this.scratch.copy(state.position).sub(this.coxa);
       const targetDistance = this.scratch.length();
-      const maximumReach = leg.reach.max * REACH_LIMIT;
+      const maximumReach = this.maximumVisualReach(legId);
       const minimumReach = leg.reach.min;
       if (targetDistance > maximumReach && targetDistance > 1e-6) {
-        this.target.copy(this.coxa).addScaledVector(this.scratch, maximumReach / targetDistance);
-        this.ik.solve(legId, this.target);
+        state.position.copy(this.coxa).addScaledVector(this.scratch, maximumReach / targetDistance);
+        this.ik.solve(legId, state.position);
       } else if (targetDistance < minimumReach && targetDistance > 1e-6) {
-        this.target.copy(this.coxa).addScaledVector(this.scratch, minimumReach / targetDistance);
-        this.ik.solve(legId, this.target);
+        state.position.copy(this.coxa).addScaledVector(this.scratch, minimumReach / targetDistance);
+        this.ik.solve(legId, state.position);
       } else {
         this.ik.solve(legId, state.position);
       }
@@ -648,13 +666,16 @@ export class SpiderChoreographer {
     const state = this.cinematicFeet.get(legId)!;
     const leg = this.rig.legs[legId];
     state.start.copy(state.position);
-    leg.footHome.getWorldPosition(state.destination);
+    this.stanceHome(legId, state.destination);
 
     const index = Number(legId[1]);
     if (travelling) {
       state.destination.addScaledVector(this.desiredForward, 0.18 + (4 - index) * 0.025);
     }
-    state.destination.addScaledVector(this.outward(legId), 0.055);
+    state.destination.addScaledVector(
+      this.outward(legId),
+      legId[1] === "1" ? FRONT_OUTWARD_STEP : DEFAULT_OUTWARD_STEP,
+    );
 
     // Nearby silk attracts the performance target, but only partially. The
     // authored stance wins if exact contact would fold a leg under the body.
@@ -665,14 +686,14 @@ export class SpiderChoreographer {
     state.address = hit?.address ?? null;
     if (hit) {
       this.aim.set(hit.position.x, hit.position.y, hit.position.z);
-      state.destination.lerp(this.aim, hit.distance < 0.18 ? 0.58 : 0.28);
+      state.destination.lerp(this.aim, hit.distance < 0.18 ? 0.24 : 0.1);
     }
 
     // Keep the target comfortably solvable. IK shapes the leg; it never gets a
     // vote on whether the body may continue along the route.
     leg.chain[0].getWorldPosition(this.coxa);
     this.scratch.copy(state.destination).sub(this.coxa);
-    const maximum = leg.reach.max * 0.93;
+    const maximum = this.maximumVisualReach(legId, 0.93);
     if (this.scratch.length() > maximum) {
       state.destination.copy(this.coxa).add(this.scratch.setLength(maximum));
     }
@@ -905,7 +926,7 @@ export class SpiderChoreographer {
   private refreshContacts(): void {
     for (const legId of SPIDER_LEG_IDS) {
       const leg = this.rig.legs[legId];
-      leg.footHome.getWorldPosition(this.aim);
+      this.stanceHome(legId, this.aim);
       leg.chain[0].getWorldPosition(this.scratch);
       this.contacts.get(legId)!.update(this.traversal, {
         footHomeWorldPosition: this.aim,
@@ -946,7 +967,7 @@ export class SpiderChoreographer {
       // needed — body straining forward, feet trailing, nothing asking to move.
       // Distance from FootHome stays large in that pose, which is the point.
       const leg = this.rig.legs[legId];
-      leg.footHome.getWorldPosition(this.aim);
+      this.stanceHome(legId, this.aim);
       const lag = contact.hasResolvedWorldPosition
         ? this.aim.distanceTo(contact.worldPosition)
         : 0;
@@ -1051,7 +1072,7 @@ export class SpiderChoreographer {
 
     // Aim ahead of the foot's home, so the spider steps into its stride rather
     // than under itself. The lead scales with how fast it is actually going.
-    leg.footHome.getWorldPosition(this.aim);
+    this.stanceHome(legId, this.aim);
     const lead = this.config.stepLead * THREE.MathUtils.clamp(this.speed / this.config.travelSpeed, 0, 1.4);
     this.aim.addScaledVector(this.desiredForward, lead);
     this.aim.addScaledVector(this.bodyUp, this.personality.rng.jitter(0.01));
@@ -1158,7 +1179,7 @@ export class SpiderChoreographer {
       // A leg with no foothold reaches toward where the body wants it. Without
       // this it would keep its last solved pose, which reads as a broken limb.
       const leg = this.rig.legs[legId];
-      leg.footHome.getWorldPosition(this.aim);
+      this.stanceHome(legId, this.aim);
 
       if (this.holdAnchors.has(legId)) {
         // Given up: drawn in slightly and held still. Not a wave — a leg that
@@ -1200,7 +1221,7 @@ export class SpiderChoreographer {
     this.target.copy(visualTarget).sub(this.coxa);
     const targetDistance = this.target.length();
     const minimumReach = leg.reach.min;
-    const maximumReach = leg.reach.max * REACH_LIMIT;
+    const maximumReach = this.maximumVisualReach(legId);
     if (targetDistance > maximumReach && targetDistance > 1e-6) {
       visualTarget.copy(this.target.multiplyScalar(maximumReach / targetDistance)).add(this.coxa);
     } else if (targetDistance < minimumReach && targetDistance > 1e-6) {
@@ -1256,13 +1277,51 @@ export class SpiderChoreographer {
 
   private restDirection(legId: SpiderLegId): THREE.Vector3 {
     const leg = this.rig.legs[legId];
-    leg.footHome.getWorldPosition(this.sweep);
+    this.stanceHome(legId, this.sweep);
     leg.chain[0].getWorldPosition(this.sweepScratch);
     this.sweep.sub(this.sweepScratch);
     if (this.sweep.lengthSq() < 1e-8) {
       this.sweep.copy(this.bodyForward);
     }
     return this.sweep.normalize();
+  }
+
+  /** Returns the procedural home target in a prograde black-widow sector. */
+  private stanceHome(legId: SpiderLegId, target: THREE.Vector3): THREE.Vector3 {
+    const leg = this.rig.legs[legId];
+    leg.footHome.getWorldPosition(target);
+    leg.chain[0].getWorldPosition(this.coxa);
+    this.scratch.copy(target).sub(this.coxa);
+
+    // Keep the authored height and radial distance, but rotate the plan-view
+    // component into the leg's anatomical fore/aft sector. This changes stance,
+    // not anatomy: IK still follows the repaired rest arch and exact lengths.
+    const vertical = this.scratch.dot(this.bodyUp);
+    const planarLength = Math.sqrt(Math.max(0, this.scratch.lengthSq() - vertical * vertical));
+    const sector = THREE.MathUtils.degToRad(LEG_SECTOR_DEGREES[legId[1] as "1" | "2" | "3" | "4"]);
+    this.contactDir
+      .copy(this.bodyForward)
+      .multiplyScalar(Math.cos(sector))
+      .addScaledVector(this.outward(legId), Math.sin(sector))
+      .normalize();
+    target
+      .copy(this.coxa)
+      .addScaledVector(this.contactDir, planarLength)
+      .addScaledVector(this.bodyUp, vertical);
+
+    if (legId[1] !== "1") return target;
+    this.scratch.copy(target).sub(this.coxa);
+    const desiredReach = leg.reach.max * FRONT_STANCE_REACH;
+    if (this.scratch.lengthSq() > 1e-8) {
+      target.copy(this.coxa).add(this.scratch.setLength(desiredReach));
+    }
+    return target;
+  }
+
+  /** Front legs keep visible knee clearance instead of using near-full extension. */
+  private maximumVisualReach(legId: SpiderLegId, defaultRatio = REACH_LIMIT): number {
+    return this.rig.legs[legId].reach.max
+      * (legId[1] === "1" ? Math.min(defaultRatio, FRONT_WORKING_REACH) : defaultRatio);
   }
 
   private claimedAddresses(exclude?: SpiderLegId): StrandAddress[] {
