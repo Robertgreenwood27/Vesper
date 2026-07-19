@@ -53,6 +53,8 @@ function parseAggregate(value: unknown): DailyAggregate | null {
   const counts = createEmptyEngagementCounts();
   for (const event of Object.keys(counts) as EngagementEvent[]) {
     const count = aggregate.counts[event];
+    // Older daily aggregates legitimately omit events introduced later.
+    if (count === undefined) continue;
     if (!Number.isSafeInteger(count) || count < 0 || !ENGAGEMENT_EVENT_SET.has(event)) return null;
     counts[event] = count;
   }

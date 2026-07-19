@@ -121,6 +121,15 @@
 
       <div class="reticle" id="reticle" aria-hidden="true"><i></i></div>
 
+      <aside class="jam-player" id="jam-player" aria-live="polite" hidden>
+        <div class="jam-track-row">
+          <span><small id="jam-now-playing">VESPER // NOW PLAYING</small><strong>VESTIGE</strong></span>
+          <time id="jam-elapsed">0:00 / 4:44</time>
+        </div>
+        <span class="jam-progress" aria-hidden="true"><i id="jam-progress"></i></span>
+        <p>DRUM-SYNCED VIOLET STORM <em>·</em> TAP MUSIC TO QUIET THE ROOM</p>
+      </aside>
+
       <nav class="care-tray" id="care-panel" aria-label="Care and interaction controls">
         <button class="care-action primary" data-action="feed">
           <span class="action-icon moth-icon" aria-hidden="true"><i></i></span>
@@ -134,6 +143,9 @@
           <span class="action-icon home-icon" aria-hidden="true"><i></i></span>
           <span><strong>Retreat</strong><small>send her somewhere safe</small></span>
         </button>
+        <button class="round-action music-action" data-action="music" aria-label="Jam out with Vesper" aria-haspopup="dialog" aria-pressed="false" title="Jam out with Vesper">
+          <span class="music-icon" aria-hidden="true"><i></i><i></i><i></i></span>
+        </button>
         <button class="round-action" data-action="follow" aria-label="Follow Vesper with the camera" aria-pressed="false">
           <span class="eye-icon" aria-hidden="true"></span>
         </button>
@@ -141,6 +153,19 @@
           <span class="moon-icon" aria-hidden="true"></span>
         </button>
       </nav>
+
+      <dialog class="jam-invitation" id="jam-invitation" aria-labelledby="jam-title" aria-describedby="jam-warning">
+        <form method="dialog">
+          <span class="jam-sigil" aria-hidden="true"><i></i><i></i><i></i></span>
+          <p class="jam-kicker">AN INVITATION FROM THE SILK</p>
+          <h2 id="jam-title">Would you like to jam out with Vesper?</h2>
+          <p class="jam-warning" id="jam-warning">Contains synchronized flashing lights.</p>
+          <div class="jam-choices">
+            <button value="cancel">Not tonight</button>
+            <button class="jam-accept" id="jam-start" value="default">Wake the storm</button>
+          </div>
+        </form>
+      </dialog>
 
       <p class="instruction" id="habitat-instruction"><span>click any strand</span> and she will decide how to get there</p>
     </main>

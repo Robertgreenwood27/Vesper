@@ -61,6 +61,8 @@ function parseAggregate(value: unknown, date: string): DailyAggregate {
   const counts = createEmptyEngagementCounts();
   for (const event of Object.keys(counts) as EngagementEvent[]) {
     const count = aggregate.counts[event];
+    // New event types must not invalidate daily files written by older builds.
+    if (count === undefined) continue;
     if (!Number.isSafeInteger(count) || count < 0) throw new Error("Invalid engagement count");
     counts[event] = count;
   }

@@ -14,6 +14,7 @@ export const ENGAGEMENT_EVENTS = [
   "camera_follow_used",
   "observation_light_used",
   "vesper_renamed",
+  "vestige_listened",
   "load_failed",
 ] as const;
 

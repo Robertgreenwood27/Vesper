@@ -319,6 +319,7 @@ export class LiveWeatherAtmosphere {
   private nextLightningAt = Number.POSITIVE_INFINITY;
   private lightningStartedAt = Number.NEGATIVE_INFINITY;
   private stormWasActive = false;
+  private performanceMode = false;
 
   constructor(
     scene: THREE.Scene,
@@ -391,6 +392,21 @@ export class LiveWeatherAtmosphere {
       this.overrides.humidity ||
       this.overrides.rain ||
       this.overrides.storm;
+  }
+
+  /**
+   * Gives an authored room performance exclusive control of the exterior
+   * light. Live weather returns when the performance releases it.
+   */
+  setPerformanceMode(active: boolean): void {
+    this.performanceMode = active;
+    this.lightning.intensity = 0;
+    if (active) {
+      this.nextLightningAt = Number.POSITIVE_INFINITY;
+      this.lightningStartedAt = Number.NEGATIVE_INFINITY;
+    } else {
+      this.stormWasActive = false;
+    }
   }
 
   private async refresh(): Promise<void> {
@@ -471,6 +487,16 @@ export class LiveWeatherAtmosphere {
 
   update(dt: number, time: number, redWatch: boolean): void {
     if (this.overrides.live && Date.now() >= this.nextRefreshAt) void this.refresh();
+    if (this.performanceMode) {
+      this.condensationTarget = 0;
+      this.reveal = THREE.MathUtils.damp(this.reveal, 0, 1.2, dt);
+      this.condensationMaterial.uniforms.reveal.value = this.reveal;
+      this.condensation.visible = this.reveal > 0.02;
+      this.daylight = THREE.MathUtils.damp(this.daylight, 0, 1.5, dt);
+      this.skyLight.intensity = this.daylight;
+      this.lightning.intensity = 0;
+      return;
+    }
     const current = this.conditions();
     if (!current) return;
 

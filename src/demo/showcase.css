@@ -61,6 +61,8 @@ a:focus-visible {
   isolation: isolate;
   overflow: clip;
   background: #050504;
+  --jam-flash: 0;
+  --jam-pulse: 0;
 }
 
 #stage {
@@ -82,6 +84,18 @@ a:focus-visible {
   pointer-events: none;
 }
 
+.atmosphere::after {
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(circle at 42% 44%, rgba(226, 184, 255, 0.72), rgba(127, 27, 255, 0.22) 26%, transparent 58%),
+    linear-gradient(116deg, rgba(52, 5, 98, 0.2), transparent 42%, rgba(165, 35, 255, 0.24));
+  content: "";
+  mix-blend-mode: screen;
+  opacity: calc(var(--jam-flash) * 0.3);
+  pointer-events: none;
+}
+
 .halo {
   background:
     radial-gradient(circle at 48% 39%, rgba(146, 158, 147, 0.08), transparent 23%),
@@ -92,6 +106,18 @@ a:focus-visible {
   background:
     linear-gradient(90deg, rgba(0, 0, 0, 0.55), transparent 24%, transparent 76%, rgba(0, 0, 0, 0.38)),
     radial-gradient(ellipse at center, transparent 34%, rgba(0, 0, 0, 0.58) 118%);
+}
+
+#habitat.jam-active .halo {
+  background:
+    radial-gradient(circle at 47% 42%, rgba(147, 64, 220, calc(0.08 + var(--jam-pulse) * 0.08)), transparent 29%),
+    radial-gradient(circle at 70% 45%, rgba(218, 62, 255, 0.08), transparent 24%);
+}
+
+#habitat.jam-active .vignette {
+  background:
+    linear-gradient(90deg, rgba(0, 0, 0, 0.78), transparent 27%, transparent 72%, rgba(0, 0, 0, 0.68)),
+    radial-gradient(ellipse at center, transparent 22%, rgba(4, 0, 8, 0.76) 112%);
 }
 
 .panel-tabs {
@@ -618,6 +644,227 @@ a:focus-visible {
   box-shadow: inset -5px -1px 0 #080807;
 }
 
+.music-action[aria-pressed="true"] {
+  border-color: rgba(195, 91, 255, 0.72);
+  background: linear-gradient(145deg, rgba(90, 16, 133, 0.82), rgba(13, 5, 20, 0.9));
+  box-shadow: 0 0 22px rgba(151, 39, 235, 0.22), inset 0 0 13px rgba(210, 113, 255, 0.08);
+}
+
+.music-icon {
+  display: flex;
+  width: 19px;
+  height: 17px;
+  gap: 3px;
+  align-items: flex-end;
+  justify-content: center;
+}
+
+.music-icon i {
+  width: 2px;
+  height: 48%;
+  border-radius: 1px;
+  background: #aaa69c;
+  box-shadow: 0 0 7px transparent;
+  transform-origin: 50% 100%;
+}
+
+.music-icon i:nth-child(2) { height: 92%; }
+.music-icon i:nth-child(3) { height: 68%; }
+
+.jam-active .music-icon i {
+  background: #dfa1ff;
+  box-shadow: 0 0 8px rgba(194, 81, 255, 0.72);
+  animation: vestige-meter 0.72s ease-in-out infinite alternate;
+}
+
+.jam-active .music-icon i:nth-child(2) { animation-delay: -0.28s; }
+.jam-active .music-icon i:nth-child(3) { animation-delay: -0.51s; }
+
+@keyframes vestige-meter {
+  from { transform: scaleY(0.36); }
+  to { transform: scaleY(1); }
+}
+
+.jam-player {
+  position: absolute;
+  right: 34px;
+  bottom: 96px;
+  z-index: 8;
+  width: min(350px, calc(100vw - 68px));
+  padding: 13px 14px 11px;
+  border: 1px solid rgba(185, 89, 247, 0.28);
+  background: linear-gradient(112deg, rgba(18, 5, 28, 0.86), rgba(6, 5, 8, 0.78));
+  box-shadow: 0 18px 52px rgba(0, 0, 0, 0.38), 0 0 36px rgba(117, 27, 183, 0.1);
+  backdrop-filter: blur(20px);
+}
+
+.jam-player[hidden] { display: none; }
+
+.jam-track-row {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+}
+
+.jam-track-row span,
+.jam-track-row small,
+.jam-track-row strong { display: block; }
+
+.jam-track-row small {
+  margin-bottom: 4px;
+  color: #8f759d;
+  font: 400 6px/1 "DM Mono", monospace;
+  letter-spacing: 0.15em;
+}
+
+.jam-track-row strong {
+  color: #eadff0;
+  font: 500 12px/1 "Manrope", sans-serif;
+  letter-spacing: 0.16em;
+}
+
+.jam-track-row time {
+  color: #826f8b;
+  font: 400 7px/1 "DM Mono", monospace;
+  letter-spacing: 0.06em;
+}
+
+.jam-progress {
+  display: block;
+  height: 1px;
+  margin-top: 10px;
+  overflow: hidden;
+  background: rgba(218, 185, 237, 0.12);
+}
+
+.jam-progress i {
+  display: block;
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(90deg, #6718a8, #df75ff);
+  box-shadow: 0 0 10px rgba(209, 89, 255, 0.8);
+  transform: scaleX(0);
+  transform-origin: left;
+}
+
+.jam-player p {
+  margin: 8px 0 0;
+  color: #65586c;
+  font: 400 5px/1 "DM Mono", monospace;
+  letter-spacing: 0.11em;
+}
+
+.jam-player p em { color: #b55bdc; font-style: normal; }
+.jam-buffering .jam-track-row strong { animation: jam-breathe 1s ease-in-out infinite alternate; }
+
+@keyframes jam-breathe {
+  from { opacity: 0.46; }
+  to { opacity: 1; text-shadow: 0 0 12px rgba(208, 95, 255, 0.48); }
+}
+
+.jam-invitation {
+  width: min(500px, calc(100vw - 34px));
+  margin: auto;
+  padding: 0;
+  overflow: visible;
+  border: 1px solid rgba(204, 117, 255, 0.34);
+  background: rgba(8, 5, 11, 0.96);
+  color: var(--bone);
+  box-shadow: 0 42px 120px rgba(0, 0, 0, 0.74), 0 0 70px rgba(125, 31, 186, 0.18);
+  backdrop-filter: blur(24px);
+}
+
+.jam-invitation::backdrop {
+  background: radial-gradient(circle at center, rgba(42, 7, 64, 0.38), rgba(0, 0, 0, 0.84));
+  backdrop-filter: blur(5px);
+}
+
+.jam-invitation form {
+  position: relative;
+  padding: 42px 42px 34px;
+  text-align: center;
+}
+
+.jam-sigil {
+  position: relative;
+  display: grid;
+  width: 48px;
+  height: 48px;
+  margin: 0 auto 23px;
+  border: 1px solid rgba(221, 167, 252, 0.24);
+  border-radius: 50%;
+  place-items: center;
+  box-shadow: inset 0 0 24px rgba(140, 39, 196, 0.12), 0 0 30px rgba(153, 39, 210, 0.1);
+}
+
+.jam-sigil::after {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #d575ff;
+  box-shadow: 0 0 15px rgba(213, 117, 255, 0.9);
+  content: "";
+}
+
+.jam-sigil i {
+  position: absolute;
+  width: 30px;
+  height: 1px;
+  background: rgba(219, 179, 239, 0.4);
+}
+
+.jam-sigil i:nth-child(2) { transform: rotate(60deg); }
+.jam-sigil i:nth-child(3) { transform: rotate(-60deg); }
+
+.jam-kicker {
+  margin: 0 0 13px;
+  color: #9b68b3;
+  font: 400 7px/1 "DM Mono", monospace;
+  letter-spacing: 0.2em;
+}
+
+.jam-invitation h2 {
+  margin: 0;
+  color: #f2eaf5;
+  font: 500 34px/1.06 "Cormorant Garamond", serif;
+}
+
+.jam-warning {
+  margin: 17px auto 0;
+  color: #a991b4;
+  font: 400 7px/1.4 "DM Mono", monospace;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+}
+
+.jam-choices {
+  display: grid;
+  grid-template-columns: 1fr 1.25fr;
+  gap: 8px;
+  margin-top: 29px;
+}
+
+.jam-choices button {
+  min-height: 46px;
+  border: 1px solid rgba(238, 232, 220, 0.13);
+  background: rgba(255, 255, 255, 0.025);
+  color: #777179;
+  cursor: pointer;
+  font: 500 8px/1 "Manrope", sans-serif;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.jam-choices button:hover { border-color: rgba(211, 145, 244, 0.38); color: #d1c6d6; }
+.jam-invitation button:focus-visible { outline-color: #d575ff; }
+
+.jam-choices .jam-accept {
+  border-color: rgba(200, 91, 255, 0.45);
+  background: linear-gradient(130deg, rgba(100, 20, 146, 0.62), rgba(28, 7, 40, 0.9));
+  color: #ecd9f5;
+  box-shadow: inset 0 0 18px rgba(218, 117, 255, 0.06);
+}
+
 .instruction {
   position: absolute;
   bottom: 41px;
@@ -780,7 +1027,7 @@ a:focus-visible {
     bottom: max(12px, env(safe-area-inset-bottom));
     left: max(12px, env(safe-area-inset-left));
     display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr)) 48px 48px;
+    grid-template-columns: repeat(3, minmax(0, 1fr)) repeat(3, 42px);
     gap: 6px;
   }
   .care-action,
@@ -800,6 +1047,12 @@ a:focus-visible {
     letter-spacing: 0.11em;
   }
   #habitat.care-collapsed .observation { bottom: max(14px, env(safe-area-inset-bottom)); }
+  .jam-player {
+    right: max(12px, env(safe-area-inset-right));
+    bottom: calc(78px + max(12px, env(safe-area-inset-bottom)));
+    left: max(12px, env(safe-area-inset-left));
+    width: auto;
+  }
 }
 
 @media (max-width: 560px) {
@@ -824,6 +1077,9 @@ a:focus-visible {
     -webkit-box-orient: vertical;
     -webkit-line-clamp: 2;
   }
+  .jam-invitation form { padding: 34px 24px 25px; }
+  .jam-invitation h2 { font-size: 29px; }
+  .jam-choices { grid-template-columns: 1fr; }
 }
 
 @media (max-height: 560px) and (orientation: landscape) {
@@ -867,7 +1123,7 @@ a:focus-visible {
     bottom: max(10px, env(safe-area-inset-bottom));
     left: auto;
     display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr)) 48px 48px;
+    grid-template-columns: repeat(3, minmax(0, 1fr)) repeat(3, 42px);
     gap: 6px;
     width: min(66vw, 610px);
   }
@@ -876,6 +1132,11 @@ a:focus-visible {
   .round-action { width: auto; }
   .care-action small { display: none; }
   .instruction { display: none; }
+  .jam-player {
+    right: max(12px, env(safe-area-inset-right));
+    bottom: calc(72px + max(10px, env(safe-area-inset-bottom)));
+    width: min(410px, 54vw);
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -26,6 +26,7 @@ import { LegGym } from "./LegGym";
 import { RigDiagnostics } from "./RigDiagnostics";
 import { SilkRenderer } from "./SilkRenderer";
 import { SpiderDroppingSystem } from "./SpiderDroppingSystem";
+import { VestigeJamExperience } from "./VestigeJamExperience";
 import {
   isGroomableLegId,
   SpiderGroomingSystem,
@@ -70,11 +71,20 @@ const autonomyCount = document.getElementById("autonomy-count") as HTMLElement;
 const autonomyLog = document.getElementById("autonomy-log") as HTMLOListElement;
 const feedButton = document.querySelector<HTMLButtonElement>("[data-action='feed']");
 const followButton = document.querySelector<HTMLButtonElement>("[data-action='follow']");
+const musicButton = document.querySelector<HTMLButtonElement>("[data-action='music']") as HTMLButtonElement;
+const jamInvitation = document.getElementById("jam-invitation") as HTMLDialogElement;
+const jamStart = document.getElementById("jam-start") as HTMLButtonElement;
+const jamPlayer = document.getElementById("jam-player") as HTMLElement;
+const jamProgress = document.getElementById("jam-progress") as HTMLElement;
+const jamElapsed = document.getElementById("jam-elapsed") as HTMLElement;
+const jamTitle = document.getElementById("jam-title") as HTMLElement;
+const jamNowPlaying = document.getElementById("jam-now-playing") as HTMLElement;
 const panelToggles = document.querySelectorAll<HTMLButtonElement>("[data-panel-toggle]");
 
 const mobileExperience =
   window.matchMedia("(max-width: 820px), (pointer: coarse)").matches ||
   Math.min(window.innerWidth, window.innerHeight) <= 560;
+const reducedMotionExperience = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
 const fullPixelRatio = Math.min(window.devicePixelRatio || 1, mobileExperience ? 1.35 : 2);
@@ -388,18 +398,6 @@ function buildMeshLid(): THREE.Group {
 }
 
 function buildEnclosure(): void {
-  const bulb = new THREE.Mesh(
-    new THREE.SphereGeometry(0.09, 12, 8),
-    new THREE.MeshStandardMaterial({
-      color: 0xffc27a,
-      emissive: 0xff7f32,
-      emissiveIntensity: 1.8,
-      roughness: 0.25,
-    }),
-  );
-  bulb.position.copy(cornerLamp.position);
-  scene.add(bulb);
-
   // The glass wall, rendered inside-out: from outside the cylinder the camera
   // sees straight through the near side, while the far side reads as the curved
   // back of the jar catching the lamps.
@@ -703,6 +701,202 @@ let habitatTime = 0;
 let lastUserAction = -30;
 let followSpider = false;
 let redWatch = false;
+
+const JAM_CAMERA_IDLE_SECONDS = 8;
+const jamCamera = {
+  engaged: false,
+  cinematic: false,
+  returning: false,
+  initialized: false,
+  lastInteractionAt: 0,
+  startAngle: 0,
+  savedPosition: new THREE.Vector3(),
+  savedTarget: new THREE.Vector3(),
+  focus: new THREE.Vector3(),
+  offset: new THREE.Vector3(),
+  desiredPosition: new THREE.Vector3(),
+};
+
+function beginJamCamera(): void {
+  // Restarting during the return ease should still restore the framing that
+  // existed before the first performance, not the half-restored midpoint.
+  if (!jamCamera.returning) {
+    jamCamera.savedPosition.copy(camera.position);
+    jamCamera.savedTarget.copy(controls.target);
+  }
+  jamCamera.engaged = true;
+  jamCamera.cinematic = false;
+  jamCamera.returning = false;
+  jamCamera.initialized = false;
+  jamCamera.lastInteractionAt = habitatTime;
+  controls.enabled = !followSpider;
+}
+
+function endJamCamera(): void {
+  jamCamera.engaged = false;
+  jamCamera.returning = jamCamera.cinematic;
+  jamCamera.cinematic = false;
+  jamCamera.initialized = false;
+  if (!jamCamera.returning) controls.enabled = !followSpider;
+}
+
+function noteJamCameraInteraction(): void {
+  if (!jamCamera.engaged) return;
+  lastUserAction = habitatTime;
+  jamCamera.lastInteractionAt = habitatTime;
+  jamCamera.cinematic = false;
+  jamCamera.initialized = false;
+  controls.enabled = !followSpider;
+}
+
+/** Returns true while the performance camera owns the final frame. */
+function updateJamCamera(dt: number): boolean {
+  if (!jamCamera.engaged && !jamCamera.returning) return false;
+
+  if (jamCamera.engaged) {
+    if (!jamCamera.cinematic) {
+      // This is the latest framing the user actually chose. If the song ends
+      // while the idle orbit is running, ease back here instead of snapping.
+      jamCamera.savedPosition.copy(camera.position);
+      jamCamera.savedTarget.copy(controls.target);
+      if (habitatTime - jamCamera.lastInteractionAt < JAM_CAMERA_IDLE_SECONDS) return false;
+      jamCamera.cinematic = true;
+      jamCamera.initialized = false;
+      controls.enabled = false;
+    }
+    if (!loadedRig) return true;
+    loadedRig.rootObject.getWorldPosition(jamCamera.focus);
+    jamCamera.focus.y += 0.05;
+
+    if (!jamCamera.initialized) {
+      jamCamera.offset.copy(camera.position).sub(jamCamera.focus);
+      const orbitProgress = reducedMotionExperience ? 0 : vestigeJam.playbackProgress * Math.PI * 2;
+      jamCamera.startAngle = Math.atan2(jamCamera.offset.z, jamCamera.offset.x) - orbitProgress;
+      jamCamera.initialized = true;
+    }
+
+    const progress = vestigeJam.playbackProgress;
+    const angle = jamCamera.startAngle + (reducedMotionExperience ? 0 : progress * Math.PI * 2);
+    const radius = mobileExperience ? 2.65 : 3.05;
+    const verticalDrift = reducedMotionExperience ? 0 : Math.sin(progress * Math.PI * 4) * 0.18;
+    jamCamera.desiredPosition.set(
+      jamCamera.focus.x + Math.cos(angle) * radius,
+      jamCamera.focus.y + (mobileExperience ? 0.58 : 0.72) + verticalDrift,
+      jamCamera.focus.z + Math.sin(angle) * radius,
+    );
+
+    camera.position.lerp(jamCamera.desiredPosition, 1 - Math.exp(-dt * 0.72));
+    controls.target.lerp(jamCamera.focus, 1 - Math.exp(-dt * 2.4));
+    camera.lookAt(controls.target);
+    return true;
+  }
+
+  camera.position.lerp(jamCamera.savedPosition, 1 - Math.exp(-dt * 1.35));
+  controls.target.lerp(jamCamera.savedTarget, 1 - Math.exp(-dt * 1.8));
+  camera.lookAt(controls.target);
+  if (
+    camera.position.distanceToSquared(jamCamera.savedPosition) < 0.0004 &&
+    controls.target.distanceToSquared(jamCamera.savedTarget) < 0.0004
+  ) {
+    camera.position.copy(jamCamera.savedPosition);
+    controls.target.copy(jamCamera.savedTarget);
+    camera.lookAt(controls.target);
+    jamCamera.returning = false;
+    controls.enabled = !followSpider;
+  }
+  return true;
+}
+
+function renderJamIdentity(active: boolean): void {
+  jamTitle.textContent = `Would you like to jam out with ${memory.name}?`;
+  jamNowPlaying.textContent = `${memory.name.toUpperCase()} // NOW PLAYING`;
+  const musicLabel = active
+    ? `Stop jamming out with ${memory.name}`
+    : `Jam out with ${memory.name}`;
+  musicButton.setAttribute("aria-label", musicLabel);
+  musicButton.title = musicLabel;
+}
+
+renderJamIdentity(false);
+const vestigeJam = new VestigeJamExperience({
+  scene,
+  habitat,
+  renderer,
+  center: new THREE.Vector3(enclosure.centerX, 0, enclosure.centerZ),
+  radius: enclosure.radius,
+  height: enclosure.height,
+  ambient,
+  key,
+  rim,
+  fill,
+  redLamp,
+  cornerLamp,
+  warmWash,
+  warmFill,
+  weather,
+  musicButton,
+  player: jamPlayer,
+  progress: jamProgress,
+  elapsed: jamElapsed,
+  isRedWatch: () => redWatch,
+  spiderName: () => memory.name,
+  describe: setStatus,
+  onStart: () => {
+    lastUserAction = habitatTime;
+    beginJamCamera();
+    if (moth) return;
+    choreographer?.setIntent({ kind: "rest" });
+    setPetMode(
+      "listening",
+      `The room goes violet. ${memory.name} holds the silk while Vestige calls in the storm.`,
+      "feeling Vestige through the silk",
+    );
+  },
+  onListened: () => trackEngagement("vestige_listened"),
+  onBeat: (strength) => {
+    const address = choreographer?.bodyAddress ?? { strandId: web.homeStrandId, t: 0.5 };
+    const strand = web.network.strands.get(address.strandId);
+    if (!strand) return;
+    const localIndex = Math.max(
+      1,
+      Math.min(
+        strand.particleIndices.length - 2,
+        Math.round(address.t * (strand.particleIndices.length - 1)),
+      ),
+    );
+    const particle = strand.particleIndices[localIndex];
+    web.network.particles.previousPositions[particle * 3 + 2] -=
+      (0.05 + strength * 0.14) * FIXED_TIME_STEP;
+  },
+  onStop: (reason) => {
+    lastUserAction = habitatTime;
+    activityDeadline = habitatTime + 8;
+    endJamCamera();
+    if (moth) return;
+    choreographer?.setIntent({ kind: "rest" });
+    const note = reason === "ended"
+      ? `Vestige spends its final note. The violet afterimage lingers on ${memory.name}'s silk.`
+      : reason === "error"
+        ? "Vestige could not reach the speakers. The room settles back into its own quiet."
+        : `The storm folds inward, leaving ${memory.name} with the last vibration in the silk.`;
+    setPetMode("resting", note, "letting the last vibration fade");
+  },
+});
+
+// Pointer/touch activity anywhere in the habitat immediately yields the shot.
+// Capture phase enables OrbitControls before its own canvas handler sees the
+// same gesture, so the first drag works instead of being swallowed.
+document.addEventListener("pointerdown", (event) => {
+  if (!vestigeJam.active) return;
+  const target = event.target;
+  if (target instanceof Element && target.closest("[data-action='music']")) return;
+  noteJamCameraInteraction();
+}, { capture: true });
+document.addEventListener("wheel", () => noteJamCameraInteraction(), {
+  capture: true,
+  passive: true,
+});
+
 let hudTimer = 0;
 let moth: THREE.Group | null = null;
 let mothWrap: PreyWrappingSystem | null = null;
@@ -818,6 +1012,7 @@ habitat.classList.add("panels-ready");
 
 panelToggles.forEach((button) => {
   button.addEventListener("click", () => {
+    noteJamCameraInteraction();
     const panel = button.dataset.panelToggle as HabitatPanel;
     setPanelVisibility(panel, !panelVisibility[panel]);
     trackEngagement(panel === "status" ? "info_panel_used" : "care_panel_used");
@@ -983,6 +1178,7 @@ function updateHud(): void {
   const state = choreographer?.state;
   const visibleMode = state?.stranded ? "considering" : petMode;
   petName.textContent = memory.name.toUpperCase();
+  renderJamIdentity(vestigeJam.active);
   document.title = `${memory.name} · Autonomous Black Widow`;
   stateLabel.textContent = visibleMode.toUpperCase();
   status.textContent = fieldNote;
@@ -2351,7 +2547,7 @@ function toggleFollow(button: HTMLButtonElement): void {
   trackEngagement("camera_follow_used");
   followSpider = !followSpider;
   button.setAttribute("aria-pressed", String(followSpider));
-  controls.enabled = !followSpider;
+  controls.enabled = !followSpider && !jamCamera.cinematic && !jamCamera.returning;
 }
 
 function toggleLights(button: HTMLButtonElement): void {
@@ -2380,6 +2576,9 @@ function renamePet(): void {
 
 document.querySelectorAll<HTMLButtonElement>("[data-action]").forEach((button) => {
   button.addEventListener("click", () => {
+    // Stopping the song is the one click that should retain the graceful
+    // return to the last user-owned framing.
+    if (button.dataset.action !== "music" || !vestigeJam.active) noteJamCameraInteraction();
     hapticPulse();
     switch (button.dataset.action) {
       case "feed":
@@ -2397,6 +2596,14 @@ document.querySelectorAll<HTMLButtonElement>("[data-action]").forEach((button) =
       case "lights":
         toggleLights(button);
         break;
+      case "music":
+        if (vestigeJam.active) {
+          vestigeJam.stop();
+        } else {
+          vestigeJam.prepare();
+          if (!jamInvitation.open) jamInvitation.showModal();
+        }
+        break;
       case "rename":
         renamePet();
         break;
@@ -2404,7 +2611,14 @@ document.querySelectorAll<HTMLButtonElement>("[data-action]").forEach((button) =
   });
 });
 
+musicButton.addEventListener("pointerenter", () => vestigeJam.prepare(), { once: true });
+jamStart.addEventListener("click", () => {
+  hapticPulse(12);
+  void vestigeJam.start();
+});
+
 window.addEventListener("keydown", (event) => {
+  noteJamCameraInteraction();
   if (rigDebugEnabled && event.key.toLowerCase() === "p") {
     setRigDebugPaused(!rigDebugPaused);
     return;
@@ -2944,6 +3158,7 @@ function frame(now: number): void {
   }
   updateFreshSilk(delta);
   updateEyeShine(delta);
+  vestigeJam.update(delta);
   spiderDroppings.update(
     delta,
     loadedRig?.spinnerets.center ?? null,
@@ -3015,7 +3230,8 @@ function frame(now: number): void {
   }
 
   resize();
-  if (followSpider && loadedRig) {
+  const jamCameraOwnsFrame = updateJamCamera(delta);
+  if (!jamCameraOwnsFrame && followSpider && loadedRig) {
     loadedRig.rootObject.getWorldPosition(petWorldPosition);
     controls.target.lerp(petWorldPosition, Math.min(1, delta * 4));
     const desiredCamera = petWorldPosition.clone().add(new THREE.Vector3(2.1, 1.1, 2.4));

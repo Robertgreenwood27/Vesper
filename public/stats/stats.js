@@ -15,6 +15,7 @@ const EVENT_LABELS = {
   camera_follow_used: "Used camera follow",
   observation_light_used: "Used observation light",
   vesper_renamed: "Renamed Vesper",
+  vestige_listened: "Listened to Vestige",
   load_failed: "Experienced a loading failure",
 };
 
@@ -57,6 +58,11 @@ function renderSummary(data) {
     metric("WEB TOUCHED", totals.web_touched || 0, percentage(totals.web_touched || 0, engaged)),
     metric("MOTHS OFFERED", totals.moth_offered || 0, percentage(totals.moth_offered || 0, engaged)),
     metric("MEALS COMPLETED", totals.moth_meal_completed || 0, percentage(totals.moth_meal_completed || 0, engaged)),
+    metric(
+      "VESTIGE LISTENS",
+      totals.vestige_listened || 0,
+      `10+ seconds of playback · ${percentage(totals.vestige_listened || 0, engaged)}`,
+    ),
     metric("RETURN VISITS", totals.return_visit || 0, "Anonymous browser return signal"),
   );
 }
