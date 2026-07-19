@@ -64,7 +64,6 @@ const hungerMeter = document.getElementById("hunger-meter") as HTMLElement;
 const hungerLabel = document.getElementById("hunger-label") as HTMLElement;
 const petName = document.getElementById("pet-name") as HTMLElement;
 const clock = document.getElementById("clock") as HTMLElement;
-const toast = document.getElementById("toast") as HTMLElement;
 const reticle = document.getElementById("reticle") as HTMLElement;
 const instinctLabel = document.getElementById("instinct-label") as HTMLElement;
 const autonomyCount = document.getElementById("autonomy-count") as HTMLElement;
@@ -704,7 +703,6 @@ let habitatTime = 0;
 let lastUserAction = -30;
 let followSpider = false;
 let redWatch = false;
-let toastTimer = 0;
 let hudTimer = 0;
 let moth: THREE.Group | null = null;
 let mothWrap: PreyWrappingSystem | null = null;
@@ -933,12 +931,6 @@ function saveMemory(): void {
 }
 
 reconcileTimeAway();
-
-function announce(message: string): void {
-  toast.textContent = message;
-  toast.classList.add("visible");
-  toastTimer = 3.4;
-}
 
 function setPetMode(mode: PetMode, note: string, activity: string): void {
   if (petMode === "repairing" && mode !== "repairing" && freshSilk) {
@@ -1223,7 +1215,6 @@ function offerMoth(source: "keeper" | "wild" = "keeper"): void {
     source === "keeper" ? "prey on the web" : "triangulating wild prey",
   );
   choreographer.setIntent({ kind: "attend", at: mothWorldPosition });
-  announce(source === "keeper" ? "A pantry moth catches in the gumfoot silk" : "The web caught something on its own");
 }
 
 function removeMoth(): void {
@@ -1457,11 +1448,6 @@ function finishMothMeal(): void {
     habitatTime + 10 + Math.random() * 8,
   );
   nextWildPreyAt = habitatTime + 52 + Math.random() * 70;
-  announce(
-    caughtWildPrey
-      ? `${memory.name} made her own luck`
-      : `${memory.name} finished the moth down to the wing hinges`,
-  );
 }
 
 const footfallDirection = new THREE.Vector3();
@@ -2332,7 +2318,6 @@ function retreat(): void {
   choreographer.setIntent({ kind: "retreat", to: { kind: "node", nodeId: web.retreatNodeId } });
   lastUserAction = habitatTime;
   setPetMode("retreating", `${memory.name} knows the safest knot in the web.`, "returning to her retreat");
-  announce("She goes home without needing to be shown the way");
 }
 
 let lastSignalAt = -999;
@@ -2360,7 +2345,6 @@ function signalOnWeb(): void {
   }
 
   setPetMode("listening", `${memory.name} turns toward the pluck and holds the line taut.`, "reading your tremor");
-  announce("The pluck runs down every anchor line");
 }
 
 function toggleFollow(button: HTMLButtonElement): void {
@@ -2368,7 +2352,6 @@ function toggleFollow(button: HTMLButtonElement): void {
   followSpider = !followSpider;
   button.setAttribute("aria-pressed", String(followSpider));
   controls.enabled = !followSpider;
-  announce(followSpider ? `Keeping ${memory.name} in view` : "Camera free · drag to orbit");
 }
 
 function toggleLights(button: HTMLButtonElement): void {
@@ -2384,7 +2367,6 @@ function toggleLights(button: HTMLButtonElement): void {
   fill.intensity = redWatch ? 0.16 : 0.7;
   ambient.intensity = redWatch ? 0.18 : 0.43;
   renderer.toneMappingExposure = redWatch ? 0.72 : 0.88;
-  announce(redWatch ? "Red observation light — less visible to her" : "Cool habitat light restored");
 }
 
 function renamePet(): void {
@@ -2394,7 +2376,6 @@ function renamePet(): void {
   memory.name = next.trim().slice(0, 18);
   saveMemory();
   updateHud();
-  announce(`She is ${memory.name} now`);
 }
 
 document.querySelectorAll<HTMLButtonElement>("[data-action]").forEach((button) => {
@@ -2524,7 +2505,6 @@ function updateMoth(dt: number): void {
       `${memory.name} pins the moth with her front legs. The web becomes a workbench.`,
       "subduing and turning prey",
     );
-    announce("Eight legs close around the moth");
   }
 
   if (mothStage === "subduing") {
@@ -2570,7 +2550,6 @@ function updateMoth(dt: number): void {
         `${memory.name} rotates the silk parcel between her legs and settles her fangs.`,
         "feeding slowly",
       );
-      announce("The moth is wrapped. The long meal begins");
     }
   } else if (mothStage === "feeding") {
     positionMothAtMouth("feeding");
@@ -2607,7 +2586,6 @@ function updateMoth(dt: number): void {
         `${memory.name} hangs the wrapped moth where the silk will remember it.`,
         "caching the meal",
       );
-      announce("She saves the moth for later");
       return;
     }
 
@@ -2641,7 +2619,6 @@ function updateMoth(dt: number): void {
         `${memory.name} finds the exact place she left off.`,
         "resuming the meal",
       );
-      announce("She came back for it");
     }
   }
 }
@@ -2972,10 +2949,6 @@ function frame(now: number): void {
     loadedRig?.spinnerets.center ?? null,
     !legGym && mothStage === "none",
   );
-  if (toastTimer > 0) {
-    toastTimer -= delta;
-    if (toastTimer <= 0) toast.classList.remove("visible");
-  }
   hudTimer -= delta;
   if (hudTimer <= 0) {
     updateHud();
