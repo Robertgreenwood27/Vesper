@@ -1689,6 +1689,25 @@ if (import.meta.env.DEV) {
             valid: contact.contactValid,
             reach: contact.reachStatus,
             load: Number(contact.carriedLoadNewtons.toFixed(3)),
+            restRole: choreographer?.isRestLegRaised(legId)
+              ? "raised"
+              : contact.isPlanted && contact.contactValid
+                ? "contact"
+                : "neutral",
+            visualGap: loadedRig && contact.hasResolvedWorldPosition
+              ? Number(
+                  loadedRig.legs[legId].footTip
+                    .getWorldPosition(new THREE.Vector3())
+                    .distanceTo(
+                      new THREE.Vector3(
+                        contact.worldPosition.x,
+                        contact.worldPosition.y,
+                        contact.worldPosition.z,
+                      ),
+                    )
+                    .toFixed(4),
+                )
+              : null,
           }))
         : [],
     travelTo: (nodeId: string) =>

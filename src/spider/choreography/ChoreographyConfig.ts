@@ -103,6 +103,19 @@ export interface ChoreographyConfig {
   /** Idle breathing rate, in hertz. */
   breathRate: number;
 
+  /** Seconds of true rest before unsupported legs assume their parked pose. */
+  restPoseDelay: number;
+  /** Follow rate for easing unsupported feet into or out of the raised pose. */
+  restPoseResponse: number;
+  /** Faster follow rate that keeps planted resting feet on moving silk. */
+  restContactResponse: number;
+  /** Maximum unsupported feet that may be held high while resting. */
+  maximumRaisedRestFeet: number;
+  /** Planar reach of a raised foot, as a fraction of that leg's maximum reach. */
+  raisedRestPlanarReach: number;
+  /** Webward lift of a raised foot, as a fraction of that leg's maximum reach. */
+  raisedRestLift: number;
+
   /** Chance per second of a micro-pause while travelling. */
   pauseChancePerSecond: number;
   /** Range of a micro-pause, in seconds. */
@@ -145,6 +158,13 @@ export const DEFAULT_CHOREOGRAPHY: ChoreographyConfig = {
 
   breathAmplitude: 0.006,
   breathRate: 0.55,
+
+  restPoseDelay: 0.3,
+  restPoseResponse: 5.5,
+  restContactResponse: 24,
+  maximumRaisedRestFeet: 3,
+  raisedRestPlanarReach: 0.54,
+  raisedRestLift: 0.42,
 
   pauseChancePerSecond: 0.28,
   pauseDuration: { min: 0.12, max: 0.55 },
