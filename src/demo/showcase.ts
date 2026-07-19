@@ -13,6 +13,7 @@ import {
 } from "../rendering/AdaptiveQuality";
 import { SpiderChoreographer } from "../spider/choreography/index";
 import { loadSpiderRig } from "../spider/SpiderRigLoader";
+import { SPIDER_LEG_IDS, type SpiderLegId } from "../spider/SpiderRigSpec";
 import { createWebNetworkTraversal } from "../traversal/index";
 import { createCobweb, DEFAULT_LEGSPAN } from "../web/createCobweb";
 import { createEnclosureLayout } from "../web/enclosureLayout";
@@ -25,6 +26,10 @@ import { LegGym } from "./LegGym";
 import { RigDiagnostics } from "./RigDiagnostics";
 import { SilkRenderer } from "./SilkRenderer";
 import { SpiderDroppingSystem } from "./SpiderDroppingSystem";
+import {
+  isGroomableLegId,
+  SpiderGroomingSystem,
+} from "./SpiderGroomingSystem";
 import {
   chooseAutonomousBehavior,
   chooseTouchResponse,
@@ -500,8 +505,11 @@ const tuned = (key: string): number | undefined => {
   return Number.isFinite(value) ? value : undefined;
 };
 const feedingTimeScale = THREE.MathUtils.clamp(tuned("feedingScale") ?? 1, 0.05, 4);
+const groomingTimeScale = THREE.MathUtils.clamp(tuned("groomingScale") ?? 1, 0.05, 4);
 const forceCachedMeal = tuned("cacheMeal") === 1;
+const skipCachedMeal = import.meta.env.DEV && tuning.get("noCacheMeal") === "1";
 const rigDebugEnabled = tuning.get("rigDebug") === "1";
+const forceRestTest = import.meta.env.DEV && tuning.get("restTest") === "1";
 /** Deterministic development route used for locomotion and junction-turn QA. */
 const forcedTravelNode = import.meta.env.DEV ? tuning.get("travelTo") : null;
 let forcedTravelAttempted = false;
@@ -594,6 +602,7 @@ function isDewHour(): boolean {
 
 let choreographer: SpiderChoreographer | null = null;
 let loadedRig: Awaited<ReturnType<typeof loadSpiderRig>> | null = null;
+let grooming: SpiderGroomingSystem | null = null;
 
 const SHOWCASE_CHOREOGRAPHY = {
   // Routes steer a continuously moving body; the legs' aggregate success at
@@ -626,6 +635,10 @@ const SHOWCASE_CHOREOGRAPHY = {
   // Rest: draw up close to the web, femora near vertical, patellae converging.
   restStandoffScale: 0.5,
   restArchGain: 1.24,
+  // Ordinary rest is a true planted hold. A lifted leg now belongs exclusively
+  // to the explicit grooming action, where the gesture has a visible purpose.
+  minimumRaisedRestFeet: 0,
+  maximumRaisedRestFeet: 0,
   // A master of her own web pauses rarely and briefly; frequent dead stops
   // mid-route read as hesitation, not thought.
   pauseChancePerSecond: 0.08,
@@ -931,9 +944,40 @@ function setPetMode(mode: PetMode, note: string, activity: string): void {
   if (petMode === "repairing" && mode !== "repairing" && freshSilk) {
     finishSilkRepair();
   }
+  if (petMode === "grooming" && mode !== "grooming") {
+    grooming?.cancel();
+  }
   petMode = mode;
   fieldNote = note;
   activityLabel.textContent = activity;
+}
+
+/** Stops locomotion and lets one randomly chosen tarsus clean through the fangs. */
+function beginGrooming(
+  note: string,
+  activity = "drawing one tarsus through her fangs",
+  preferredLeg?: SpiderLegId,
+): void {
+  if (!choreographer || !grooming) return;
+  const state = choreographer.state;
+  const alreadyStill = state.restPoseSettled
+    && (state.intent === "rest" || state.intent === "freeze");
+  if (!alreadyStill) choreographer.setIntent({ kind: "freeze" });
+  const legId = grooming.start(preferredLeg);
+  activityDeadline = Math.max(activityDeadline, habitatTime + 10 / groomingTimeScale);
+  const legName = `${legId[0] === "L" ? "left" : "right"} leg ${legId[1]}`;
+  setPetMode("grooming", note, `${activity} · ${legName}`);
+}
+
+function finishGrooming(): void {
+  if (!choreographer || petMode !== "grooming") return;
+  choreographer.setIntent({ kind: "rest" });
+  setPetMode(
+    "resting",
+    `${memory.name} returns the cleaned leg to the same strand and goes still.`,
+    "settled after grooming",
+  );
+  activityDeadline = habitatTime + 7 + Math.random() * 8;
 }
 
 function hungerWord(value: number): string {
@@ -1123,7 +1167,7 @@ function offerMoth(source: "keeper" | "wild" = "keeper"): void {
   mothSubdueSeconds = Math.max(0.8, (1.45 + Math.random() * 0.45) * feedingTimeScale);
   mothWrapSeconds = (6.5 + Math.random() * 3.5) * feedingTimeScale;
   mothCacheSeconds = (11 + Math.random() * 12) * feedingTimeScale;
-  mothWillCache = forceCachedMeal || Math.random() < 0.38;
+  mothWillCache = !skipCachedMeal && (forceCachedMeal || Math.random() < 0.38);
   mothWasCached = false;
   mothCacheAtProgress = 0.3 + Math.random() * 0.28;
   mothFeedingNote = 0;
@@ -1398,15 +1442,20 @@ function finishMothMeal(): void {
     debugMind("keeper meal completed");
   }
   saveMemory();
-  choreographer.setIntent({ kind: "rest" });
-  setPetMode(
-    "grooming",
+  // The terminal feeding frame still has its prey-handling leg overlay applied.
+  // Clear it before grooming samples a home foot position, or the cleaned leg
+  // would return to a pose that existed only while it was holding the moth.
+  removeFeedingLimbPose();
+  beginGrooming(
     caughtWildPrey
-      ? `${memory.name} finishes every usable part and cleans one pedipalp.`
-      : `${memory.name} finishes the moth, then methodically cleans every leg.`,
+      ? `${memory.name} finishes every usable part, then folds one tarsus to her mouthparts.`
+      : `${memory.name} finishes the moth and draws one silk-dusted leg through her chelicerae.`,
     "sated and cleaning",
   );
-  activityDeadline = habitatTime + 10 + Math.random() * 8;
+  activityDeadline = Math.max(
+    activityDeadline,
+    habitatTime + 10 + Math.random() * 8,
+  );
   nextWildPreyAt = habitatTime + 52 + Math.random() * 70;
   announce(
     caughtWildPrey
@@ -1595,6 +1644,7 @@ async function boot(): Promise<void> {
     config: SHOWCASE_CHOREOGRAPHY,
     onFootPlant: (_legId, address) => pressFootfall(address),
   });
+  grooming = new SpiderGroomingSystem(rig, choreographer.ik);
 
   if (rigDebugEnabled) {
     rigDiagnostics = new RigDiagnostics(scene, habitat, rig, choreographer, {
@@ -1638,6 +1688,23 @@ async function boot(): Promise<void> {
       `${memory.name} follows a deterministic locomotion test route.`,
       `testing the turn into ${forcedTravelNode}`,
     );
+  } else if (forceRestTest) {
+    choreographer.setIntent({ kind: "rest" });
+    setPetMode(
+      "resting",
+      `${memory.name} holds a deterministic resting pose for foot-placement review.`,
+      "at rest",
+    );
+  } else if (import.meta.env.DEV && tuning.get("groom") === "1") {
+    const requestedLeg = tuning.get("groomLeg");
+    const preferredLeg = isGroomableLegId(requestedLeg) ? requestedLeg : undefined;
+    if (requestedLeg === null || preferredLeg) {
+      beginGrooming(
+        `${memory.name} folds one leg to her mouthparts for a grooming test.`,
+        "grooming test",
+        preferredLeg,
+      );
+    }
   }
 
   // After a real absence she may, once settled, briefly face a stretch of
@@ -1672,9 +1739,16 @@ if (import.meta.env.DEV) {
   (window as unknown as Record<string, unknown>).__silklab = {
     step(count: number) {
       for (let i = 0; i < count; i += 1) {
+        grooming?.restoreBasePose();
         solver.step(FIXED_TIME_STEP);
         if (legGym) legGym.update(FIXED_TIME_STEP);
         else choreographer?.update(FIXED_TIME_STEP);
+        if (grooming?.update(
+          FIXED_TIME_STEP * groomingTimeScale,
+          choreographer?.state.restPoseSettled ?? false,
+        )) {
+          finishGrooming();
+        }
       }
       return choreographer?.state;
     },
@@ -1688,6 +1762,17 @@ if (import.meta.env.DEV) {
       wasCached: mothWasCached,
       wrapping: mothWrap?.snapshot ?? null,
     }),
+    groom: (legId?: string) => {
+      if (legId !== undefined && !isGroomableLegId(legId)) return null;
+      const preferred = isGroomableLegId(legId) ? legId : undefined;
+      beginGrooming(
+        `${memory.name} folds one leg to her mouthparts for a grooming test.`,
+        "grooming test",
+        preferred,
+      );
+      return grooming?.snapshot ?? null;
+    },
+    grooming: () => grooming?.snapshot ?? null,
     poop: () => loadedRig ? spiderDroppings.dropNow(loadedRig.spinnerets.center) : false,
     dropping: () => spiderDroppings.snapshot,
     web: () => ({
@@ -1706,12 +1791,16 @@ if (import.meta.env.DEV) {
             valid: contact.contactValid,
             reach: contact.reachStatus,
             load: Number(contact.carriedLoadNewtons.toFixed(3)),
-            restRole: choreographer?.isRestLegRaised(legId)
-              ? "raised"
-              : contact.isPlanted && contact.contactValid
-                ? "contact"
-                : "neutral",
-            visualGap: loadedRig && contact.hasResolvedWorldPosition
+            restRole: grooming?.snapshot.active && grooming.snapshot.legId === legId
+              ? "grooming"
+              : choreographer?.isRestLegRaised(legId)
+                ? "raised"
+                : contact.isPlanted && contact.contactValid
+                  ? "contact"
+                  : "neutral",
+            visualGap: grooming?.snapshot.active && grooming.snapshot.legId === legId
+              ? null
+              : loadedRig && contact.hasResolvedWorldPosition
               ? Number(
                   loadedRig.legs[legId].footTip
                     .getWorldPosition(new THREE.Vector3())
@@ -2578,6 +2667,8 @@ function travelToRememberedSpot(spot: { strandId: string; t: number }, urgency: 
 function updateAutonomy(dt: number): void {
   if (!choreographer) return;
   memory.hunger = Math.min(100, memory.hunger + dt * 0.004);
+  if (forceRestTest) return;
+  if (grooming?.snapshot.active) return;
   if (forcedTravelRunOwnsAutonomy()) return;
   if (moth) return;
 
@@ -2590,7 +2681,7 @@ function updateAutonomy(dt: number): void {
     const restHere = arrivalRest;
     arrivalRest = false;
     setPetMode(
-      arrivedFromRepair ? "grooming" : arrivedFromRetreat || restHere ? "resting" : "watching",
+      arrivedFromRepair ? "watching" : arrivedFromRetreat || restHere ? "resting" : "watching",
       arrivedFromRepair
         ? `${memory.name} tests the new line with one deliberate foot.`
         : arrivedFromRetreat
@@ -2681,9 +2772,10 @@ function updateAutonomy(dt: number): void {
       rememberAutonomousAct("Chose the retreat when the room felt too exposed.");
       break;
     case "groom":
-      choreographer.setIntent({ kind: "freeze" });
-      setPetMode("grooming", `${memory.name} draws each leg through her chelicerae, one by one.`, "grooming all eight legs");
-      rememberAutonomousAct("Stopped to groom all eight legs.");
+      beginGrooming(
+        `${memory.name} stops, folds one leg inward, and combs the tarsus through her chelicerae.`,
+      );
+      rememberAutonomousAct("Stopped to groom a tarsus through her chelicerae.");
       break;
     case "listen":
       choreographer.setIntent({ kind: "freeze" });
@@ -2729,7 +2821,10 @@ function updateAutonomy(dt: number): void {
       setPetMode("resting", `${memory.name} does nothing at all, with great intention.`, "breathing beneath the web");
       break;
   }
-  activityDeadline = habitatTime + 12 + Math.random() * 20;
+  activityDeadline = Math.max(
+    activityDeadline,
+    habitatTime + 12 + Math.random() * 20,
+  );
 }
 
 function updateAtmosphere(dt: number): void {
@@ -2752,7 +2847,11 @@ function updateAtmosphere(dt: number): void {
     // She notices it through stillness. This is deliberately a one-shot freeze:
     // repeatedly replanning an `attend` route to the moving ember made a spider
     // whose HUD still said RESTING replant her feet every few seconds.
-    const free = !moth && petMode !== "feeding" && petMode !== "stalking" && choreographer;
+    const free = !moth
+      && petMode !== "feeding"
+      && petMode !== "stalking"
+      && petMode !== "grooming"
+      && choreographer;
     if (free && !fireflyHeldHerGaze && habitatTime >= nextFireflyGlance) {
       const intent = choreographer?.state.intent;
       // Do not disturb an already locked rest/freeze pose merely to notice it.
@@ -2764,7 +2863,12 @@ function updateAtmosphere(dt: number): void {
   } else if (fireflyHeldHerGaze) {
     fireflyHeldHerGaze = false;
     nextFireflyAt = habitatTime + (forceFirefly ? 30 : 240 + Math.random() * 420);
-    if (!moth && petMode !== "feeding" && petMode !== "stalking") {
+    if (
+      !moth
+      && petMode !== "feeding"
+      && petMode !== "stalking"
+      && petMode !== "grooming"
+    ) {
       choreographer?.setIntent({ kind: "rest" });
     }
   }
@@ -2831,6 +2935,7 @@ function frame(now: number): void {
   }
   accumulator += delta;
   habitatTime += delta;
+  grooming?.restoreBasePose();
   removeFeedingLimbPose();
 
   let steps = 0;
@@ -2850,6 +2955,12 @@ function frame(now: number): void {
 
   if (!legGym) {
     updateMoth(delta);
+    if (grooming?.update(
+      delta * groomingTimeScale,
+      choreographer?.state.restPoseSettled ?? false,
+    )) {
+      finishGrooming();
+    }
     updateAutonomy(delta);
     updateAtmosphere(delta);
     updateWebSense(delta);
@@ -2869,6 +2980,23 @@ function frame(now: number): void {
   if (hudTimer <= 0) {
     updateHud();
     hudTimer = 0.2;
+  }
+
+  if (import.meta.env.DEV && grooming) {
+    document.documentElement.dataset.groomTest = JSON.stringify({
+      ...grooming.snapshot,
+      choreographer: choreographer?.state ?? null,
+      feet: loadedRig
+        ? Object.fromEntries(
+            SPIDER_LEG_IDS.map((legId) => [
+              legId,
+              loadedRig!.footTips[legId]
+                .getWorldPosition(new THREE.Vector3())
+                .toArray(),
+            ]),
+          )
+        : null,
+    });
   }
 
   if (import.meta.env.DEV && forcedTravelNodeIsValid() && choreographer) {

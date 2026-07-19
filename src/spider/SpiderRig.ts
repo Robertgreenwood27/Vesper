@@ -48,6 +48,18 @@ export interface SpiderRigSpinnerets {
   readonly right: Bone;
 }
 
+export interface SpiderRigPedipalps {
+  readonly left: readonly Bone[];
+  readonly leftTip: Bone;
+  readonly right: readonly Bone[];
+  readonly rightTip: Bone;
+}
+
+export interface SpiderRigFangs {
+  readonly left: readonly Bone[];
+  readonly right: readonly Bone[];
+}
+
 export interface SpiderLegChain {
   readonly id: SpiderLegId;
   readonly side: SpiderLegSide;
@@ -377,6 +389,8 @@ export class SpiderRig {
   readonly mesh: SkinnedMesh;
   readonly references: SpiderRigReferences;
   readonly spinnerets: SpiderRigSpinnerets;
+  readonly pedipalps: SpiderRigPedipalps;
+  readonly fangs: SpiderRigFangs;
   readonly legs: Readonly<Record<SpiderLegId, SpiderLegChain>>;
   readonly footTips: Readonly<Record<SpiderLegId, Bone>>;
   readonly footHomes: Readonly<Record<SpiderLegId, Bone>>;
@@ -418,6 +432,16 @@ export class SpiderRig {
       center: requireResolvedBone(bones, "Spinneret_Center"),
       left: requireResolvedBone(bones, "Spinneret_L"),
       right: requireResolvedBone(bones, "Spinneret_R"),
+    };
+    this.pedipalps = {
+      left: spec.pedipalps.left.map((name) => requireResolvedBone(bones, name)),
+      leftTip: requireResolvedBone(bones, spec.pedipalps.left_tip),
+      right: spec.pedipalps.right.map((name) => requireResolvedBone(bones, name)),
+      rightTip: requireResolvedBone(bones, spec.pedipalps.right_tip),
+    };
+    this.fangs = {
+      left: spec.fangs.left.map((name) => requireResolvedBone(bones, name)),
+      right: spec.fangs.right.map((name) => requireResolvedBone(bones, name)),
     };
     this.legs = buildLegs(spec, bones);
     this.footTips = Object.fromEntries(

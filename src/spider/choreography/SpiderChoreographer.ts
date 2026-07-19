@@ -421,6 +421,17 @@ export class SpiderChoreographer {
   private readonly raisedRestFeet = new Set<SpiderLegId>();
   /** Fixed world targets captured after the bounded rest-contact evaluations. */
   private readonly lockedRestTargets = new Map<SpiderLegId, THREE.Vector3>();
+  /**
+   * A planted rest captures the solved foot tips after IK, not the controller's
+   * requested positions before IK. This flag bridges those two phases.
+   */
+  private capturePlantedRestAfterSolve = false;
+  /**
+   * Feet keep their planted-rest anchors until their ordinary gait turn lifts
+   * them. Without this handoff, all eight chase newly transported contacts on
+   * the first travel frame and the quiet pose ends in a simultaneous shuffle.
+   */
+  private readonly plantedRestDepartureFeet = new Set<SpiderLegId>();
   /** Feet just recovered from the high pose cannot be the next ordinary lift. */
   private readonly cinematicRecoveryCooldown = new Set<SpiderLegId>();
   private restPoseClock = 0;
@@ -590,6 +601,18 @@ export class SpiderChoreographer {
   }
 
   setIntent(intent: SpiderIntent): void {
+    const leavingLockedStationaryPose =
+      this.config.cinematicLocomotion
+      && this.config.maximumRaisedRestFeet <= 0
+      && this.restPoseActive
+      && this.restPoseSettled
+      && this.stationaryPoseKind !== null
+      && destinationOf(intent) !== null;
+    if (leavingLockedStationaryPose) {
+      for (const legId of SPIDER_LEG_IDS) this.plantedRestDepartureFeet.add(legId);
+    } else if (intent.kind === "rest" || intent.kind === "freeze") {
+      this.plantedRestDepartureFeet.clear();
+    }
     this.intent = intent;
     this.intentDirty = true;
     this.stranded = false;
@@ -625,6 +648,8 @@ export class SpiderChoreographer {
     this.cinematicLastGroupIndex = -1;
     this.raisedRestFeet.clear();
     this.lockedRestTargets.clear();
+    this.capturePlantedRestAfterSolve = false;
+    this.plantedRestDepartureFeet.clear();
     this.cinematicRecoveryCooldown.clear();
     this.restPoseClock = 0;
     this.restContactCheckClock = 0;
@@ -925,6 +950,8 @@ export class SpiderChoreographer {
     this.cinematicStepClock = 0;
     this.raisedRestFeet.clear();
     this.lockedRestTargets.clear();
+    this.capturePlantedRestAfterSolve = false;
+    this.plantedRestDepartureFeet.clear();
     this.cinematicRecoveryCooldown.clear();
     this.restPoseClock = 0;
     this.restContactCheckClock = 0;
@@ -1005,6 +1032,7 @@ export class SpiderChoreographer {
     this.updateCinematicRestPose(dt);
     this.updateRestArch(dt);
     this.solveCinematicFeet();
+    this.finalizePlantedRestSnapshot();
     this.loads.applyFixedStep(dt, this.bodyPosition);
   }
 
@@ -1060,6 +1088,7 @@ export class SpiderChoreographer {
       this.restPoseSettled = false;
       this.stationaryPoseKind = null;
       this.lockedRestTargets.clear();
+      this.capturePlantedRestAfterSolve = false;
       this.restContactCheckClock = 0;
       this.restContactChecks = 0;
       this.restPoseSettleClock = 0;
@@ -1088,6 +1117,7 @@ export class SpiderChoreographer {
         this.restPoseActive = false;
         this.stationaryPoseKind = null;
         this.lockedRestTargets.clear();
+        this.capturePlantedRestAfterSolve = false;
         this.restContactCheckClock = 0;
         this.restContactChecks = 0;
         this.restPoseSettleClock = 0;
@@ -1102,6 +1132,22 @@ export class SpiderChoreographer {
       this.restPoseClock += dt;
       if (this.restPoseClock < this.config.restPoseDelay) return;
       if (requestedKind === "rest") {
+        if (this.config.maximumRaisedRestFeet <= 0) {
+          // A planted rest means the feet have chosen their places. Their
+          // cinematic world targets already stayed fixed through the body tuck;
+          // capture those exact visible positions and stop. Rechecking live silk
+          // and easing toward a second target reads as continual foot hunting.
+          this.raisedRestFeet.clear();
+          this.lockedRestTargets.clear();
+          this.restContactChecks = REST_CONTACT_CHECK_LIMIT;
+          this.restContactCheckClock = 0;
+          this.restPoseSettleClock = 0;
+          this.restPoseActive = true;
+          this.restPoseSettled = false;
+          this.stationaryPoseKind = requestedKind;
+          this.capturePlantedRestAfterSolve = true;
+          return;
+        }
         this.selectRaisedRestFeet();
       } else {
         this.raisedRestFeet.clear();
@@ -1163,7 +1209,7 @@ export class SpiderChoreographer {
       for (const [legId, target] of this.lockedRestTargets) {
         this.cinematicFeet.get(legId)!.position.copy(target);
       }
-      this.restPoseSettled = true;
+      if (this.stationaryArchSettled()) this.restPoseSettled = true;
     }
   }
 
@@ -1190,13 +1236,43 @@ export class SpiderChoreographer {
     }
   }
 
+  /** Ordinary rest keeps the exact places the solved, visible feet chose. */
+  private captureSolvedRestTargets(): void {
+    this.rig.rootObject.updateMatrixWorld(true);
+    this.lockedRestTargets.clear();
+    for (const legId of SPIDER_LEG_IDS) {
+      this.rig.legs[legId].footTip.getWorldPosition(this.target);
+      this.cinematicFeet.get(legId)!.position.copy(this.target);
+      this.lockedRestTargets.set(legId, this.target.clone());
+    }
+  }
+
+  /** Completes the post-IK planted snapshot once its stationary arch is final. */
+  private finalizePlantedRestSnapshot(): void {
+    if (!this.capturePlantedRestAfterSolve) return;
+    // Seed the lock once. While the arch converges, IK keeps solving toward this
+    // same world-space anchor instead of ratcheting tiny residuals into drift.
+    if (this.lockedRestTargets.size === 0) this.captureSolvedRestTargets();
+    if (!this.stationaryArchSettled()) return;
+    // Publish the actual final solved tips, eliminating any clamp-sized gap
+    // between the controller target and the mesh before the hard hold begins.
+    this.captureSolvedRestTargets();
+    this.capturePlantedRestAfterSolve = false;
+    this.restPoseSettled = true;
+  }
+
+  private stationaryArchSettled(): boolean {
+    if (this.config.restArchGain === 1) return true;
+    const target = this.stationaryPoseKind === "rest" ? 1 : 0;
+    return Math.abs(this.restArchBlend - target) < 1e-3;
+  }
+
   private selectRaisedRestFeet(): void {
     this.raisedRestFeet.clear();
     this.reconcileRestContacts();
 
-    // Even a dense web should show the characteristic black-widow resting
-    // gesture. When every foot found silk, deliberately let go of the weakest
-    // nonessential support rather than leaving all eight feet visually flat.
+    // When configured, show the characteristic black-widow resting gesture by
+    // letting go of the weakest nonessential support on otherwise dense silk.
     const minimum = Math.min(
       this.raisedRestLimit(),
       Math.max(0, Math.floor(this.config.minimumRaisedRestFeet)),
@@ -1538,6 +1614,7 @@ export class SpiderChoreographer {
         if (
           this.route.hasRoute &&
           !this.route.arrived &&
+          !this.plantedRestDepartureFeet.has(legId) &&
           this.isCinematicContactTrackable(legId)
         ) {
           const contact = this.contacts.get(legId)!;
@@ -2071,6 +2148,7 @@ export class SpiderChoreographer {
     travelling: boolean,
     landingForward: THREE.Vector3,
   ): void {
+    this.plantedRestDepartureFeet.delete(legId);
     const state = this.cinematicFeet.get(legId)!;
     state.start.copy(state.position);
     state.address = this.planCinematicLanding(
