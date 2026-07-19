@@ -111,10 +111,10 @@ const HOLD_AFTER_FAILURES = 3;
 const HOLD_RELEASE_DISTANCE = 0.12;
 
 const CINEMATIC_GAIT: readonly (readonly SpiderLegId[])[] = [
-  ["L1", "R3"],
-  ["R1", "L3"],
   ["L2", "R4"],
+  ["R1", "L3"],
   ["R2", "L4"],
+  ["L1", "R3"],
 ];
 
 /**
@@ -125,17 +125,121 @@ const CINEMATIC_GAIT: readonly (readonly SpiderLegId[])[] = [
  * a relaxed stance prevents a sharp route corner from winding six planted legs
  * around a body that has already completed the turn.
  */
-const CINEMATIC_TURN_PER_STEP = THREE.MathUtils.degToRad(20);
+const CINEMATIC_TURN_PER_STEP = THREE.MathUtils.degToRad(28);
 const CINEMATIC_TURN_DEADBAND = THREE.MathUtils.degToRad(2);
+/**
+ * Heading error below which a turn is absorbed by the flowing overlapped gait
+ * instead of dropping into careful sequential stepping. Web routes corner at
+ * every node; treating each few-degree polyline kink as a "turn" toggled the
+ * gait mode at every junction, and the mode switch itself was a visible hitch.
+ * Only genuine corners beyond this get the deliberate land-then-authorize walk.
+ */
+const CINEMATIC_TURN_FLOW_LIMIT = THREE.MathUtils.degToRad(14);
+/**
+ * Fraction of a careful turn slice granted even when the turning pair found no
+ * silk. The stepping gesture itself sells the turn — legs posed into the new
+ * heading read as planted — and a corner with poor silk must never strand the
+ * heading, because a stranded heading is a stalled spider.
+ */
+const CINEMATIC_TURN_MISS_AUTHORITY = 0.75;
 /** Let the thorax catch the planted support frame before authorizing more yaw. */
-const CINEMATIC_MAX_BODY_SUPPORT_LAG = THREE.MathUtils.degToRad(12);
+const CINEMATIC_MAX_BODY_SUPPORT_LAG = THREE.MathUtils.degToRad(16);
 /** Normalized IK error at which anatomy outranks the ordinary pair sequence. */
 const CINEMATIC_IK_URGENCY_THRESHOLD = 0.08;
 /** Makes a visibly joint-limited pair win without starving every other pair. */
 const CINEMATIC_IK_URGENCY_WEIGHT = 5;
 
-/** Minimum route speed retained while the spider prepares a sharp corner. */
-const CINEMATIC_CORNER_SPEED_FLOOR = 0.28;
+/**
+ * Minimum route speed retained while the spider prepares a sharp corner. She
+ * knows her web; a corner is a lean, not a negotiation.
+ */
+const CINEMATIC_CORNER_SPEED_FLOOR = 0.45;
+
+/**
+ * Cinematic travel is still permissive, but it may not pull a planted leg past
+ * the same workspace used to choose an exact silk landing.
+ */
+const CINEMATIC_BODY_REACH_LIMIT = 0.9;
+
+/**
+ * The hybrid governor: the body moves continuously — never waiting on any
+ * individual footfall — while its speed is throttled by a smooth signal of how
+ * well the legs are actually doing. Dense silk and successful searches hold the
+ * signal at 1 and she flows; sparse silk degrades it and she visibly slows and
+ * picks her way.
+ *
+ * Truth is weighted here, deliberately: smooth body movement carries more of
+ * the illusion than perfect leg placement. Six well-placed feet sell a spider;
+ * a stalled or lurching body breaks her instantly. Placement failures may
+ * therefore change her pace and posture, but never her continuity.
+ */
+/** Feet that are healthy (valid silk or mid-swing) beyond this count as support. */
+const CINEMATIC_QUALITY_HEALTHY_FLOOR = 4;
+/** Healthy feet above the floor needed to count as fully supported. */
+const CINEMATIC_QUALITY_HEALTHY_SPAN = 4;
+/** Response rate of the smoothed quality signal. Slow enough not to pulse. */
+const CINEMATIC_QUALITY_RESPONSE = 3.5;
+/**
+ * Speed factor at zero quality. Even a fully silk-blind stretch only slows her
+ * to this fraction — she picks her way, she does not stall.
+ */
+const CINEMATIC_QUALITY_SPEED_FLOOR = 0.4;
+/** Per-attempt blend of the foothold-search success average. */
+const CINEMATIC_SEARCH_EMA_ALPHA = 0.12;
+
+/**
+ * Per-pair scales applied to config.swingDuration and config.swingLift.
+ *
+ * The front pair explores: long, high, deliberate reaches that read as feeling
+ * out the silk ahead. The remaining pairs assist locomotion with quicker,
+ * lower strokes, pair IV lowest of all — it holds and pushes. The old
+ * hardcoded profile gave pair I the *fastest, flattest* swing, which is
+ * backwards for a web spider and a large part of why travel read as a scoot.
+ */
+const CINEMATIC_SWING_DURATION_SCALE: Readonly<
+  Record<"1" | "2" | "3" | "4", number>
+> = { "1": 1, "2": 0.72, "3": 0.74, "4": 0.8 };
+const CINEMATIC_SWING_LIFT_SCALE: Readonly<
+  Record<"1" | "2" | "3" | "4", number>
+> = { "1": 1.5, "2": 1, "3": 0.9, "4": 0.8 };
+
+/** Extra prograde reach for pair I only: the explore-and-pull stride. */
+const FRONT_EXPLORE_LEAD = 0.055;
+
+/**
+ * Overlapped stepping, the other half of the hybrid: on straight confident
+ * travel the next pair launches while the current pair is still finishing its
+ * swing, so there is always a leg reaching — the visual signature of a fluid
+ * spider. Turning keeps the strict sequential land-then-authorize machinery:
+ * corners are exactly where care reads as intelligence rather than hesitance.
+ */
+/** Fraction of a moving pair's swing that must elapse before the next lifts. */
+const CINEMATIC_OVERLAP_PROGRESS = 0.5;
+/** Launch-to-launch period as a fraction of the launched pair's swing time. */
+const CINEMATIC_OVERLAP_CADENCE = 0.75;
+/** Feet already airborne beyond which no overlap launch is considered. */
+const CINEMATIC_MAX_OVERLAP_FEET = 2;
+
+/** Remaining travel room below which a planted foot counts as pinning the body. */
+const CINEMATIC_PINNED_ROOM = 0.01;
+/** Valid supports that must remain before a pinning foot may be released. */
+const CINEMATIC_PINNED_SUPPORT_FLOOR = 4;
+
+/** Tuck progress under this distance counts as the settled rest standoff. */
+const REST_TUCK_EPSILON = 0.012;
+/** An unreachable ideal tuck may not defer the rest snapshot forever. */
+const REST_TUCK_TIME_LIMIT = 2.5;
+
+/**
+ * Stance displacement that justifies a replant while paused mid-route.
+ *
+ * Must sit clearly above the longest legitimate stride lead (front pair:
+ * stepLead + FRONT_EXPLORE_LEAD), or a foot that just planted a proper
+ * exploring stride would immediately qualify to step "back into place" the
+ * moment a micro-pause drops the travel flag — a backwards fidget the old
+ * 0.24 threshold produced once strides grew past it.
+ */
+const CINEMATIC_STANCE_REPLANT_LAG = 0.45;
 
 /**
  * A balanced priority for unsupported resting legs.
@@ -199,6 +303,8 @@ export interface ChoreographerState {
   readonly confidence: number;
   readonly paused: boolean;
   readonly leash: number;
+  /** Smoothed 0..1 measure of how well the legs are finding and holding silk. */
+  readonly supportQuality: number;
   readonly hasRoute: boolean;
   readonly routeRemaining: number;
   readonly arrived: boolean;
@@ -295,6 +401,13 @@ export class SpiderChoreographer {
   private readonly cinematicFeet = new Map<SpiderLegId, CinematicFootState>();
   private cinematicGaitIndex = 0;
   private cinematicStepClock = 0;
+  /** Smoothed 0..1 leg-truth signal that throttles continuous body travel. */
+  private cinematicSupportQuality = 1;
+  /** Running average of recent travelling foothold searches that found silk. */
+  private footholdSearchEma = 1;
+  /** Landing accounting for the sequential turn machinery only. */
+  private cinematicStepExpectedLandings = 0;
+  private cinematicStepRealLandings = 0;
   /** Heading already earned by landed feet; the body is not allowed ahead of it. */
   private readonly cinematicSupportForward = new THREE.Vector3(1, 0, 0);
   /** Heading targeted by the pair currently in flight. */
@@ -316,6 +429,11 @@ export class SpiderChoreographer {
   private restPoseSettleClock = 0;
   private restPoseActive = false;
   private restPoseSettled = false;
+  /** True once the slow draw toward the reduced rest standoff has finished. */
+  private restTuckSettled = false;
+  private restTuckClock = 0;
+  /** 0..1 ease of the rest arch multiplier currently pushed into the solver. */
+  private restArchBlend = 0;
   /** Which stationary intent owns the current lock; prevents stale early-outs. */
   private stationaryPoseKind: StationaryPoseKind | null = null;
 
@@ -404,6 +522,14 @@ export class SpiderChoreographer {
     return planted;
   }
 
+  private cinematicMovingFeetCount(): number {
+    let moving = 0;
+    for (const foot of this.cinematicFeet.values()) {
+      if (foot.moving) moving += 1;
+    }
+    return moving;
+  }
+
   get state(): ChoreographerState {
     const planted = this.plantedCount();
     let cinematicSwinging = 0;
@@ -420,6 +546,7 @@ export class SpiderChoreographer {
       confidence: this.personality.confidence,
       paused: this.personality.isPaused,
       leash: this.leash,
+      supportQuality: this.cinematicSupportQuality,
       hasRoute: this.route.hasRoute,
       routeRemaining: this.route.remaining,
       arrived: this.config.cinematicLocomotion
@@ -466,6 +593,14 @@ export class SpiderChoreographer {
     this.intent = intent;
     this.intentDirty = true;
     this.stranded = false;
+    // Turn authorization belongs to the route that earned it; a new instruction
+    // starts from the currently landed support frame.
+    this.cinematicStepFramePending = false;
+    this.cinematicStepExpectedLandings = 0;
+    this.cinematicStepRealLandings = 0;
+    // Each rest interval earns its own tuck from wherever travel ends.
+    this.restTuckSettled = false;
+    this.restTuckClock = 0;
   }
 
   /**
@@ -483,6 +618,10 @@ export class SpiderChoreographer {
     this.cinematicStepForward.copy(this.bodyForward);
     this.cinematicPlanningUp.copy(this.bodyUp);
     this.cinematicStepFramePending = false;
+    this.cinematicSupportQuality = 1;
+    this.footholdSearchEma = 1;
+    this.cinematicStepExpectedLandings = 0;
+    this.cinematicStepRealLandings = 0;
     this.cinematicLastGroupIndex = -1;
     this.raisedRestFeet.clear();
     this.lockedRestTargets.clear();
@@ -493,6 +632,8 @@ export class SpiderChoreographer {
     this.restPoseSettleClock = 0;
     this.restPoseActive = false;
     this.restPoseSettled = false;
+    this.restTuckSettled = false;
+    this.restTuckClock = 0;
     this.stationaryPoseKind = null;
 
     // Provisional placement so the FootHome bones land near the silk.
@@ -696,10 +837,59 @@ export class SpiderChoreographer {
         1,
         alignment * alignment,
       );
+      // The route steers a continuously moving body; the legs' aggregate truth
+      // throttles it. Support quality is a smooth signal with a hard speed
+      // floor, so sparse silk changes her pace and character — never her
+      // continuity. Smoothness outranks placement by design.
+      brake *= THREE.MathUtils.clamp(
+        1 - this.leash / Math.max(1e-3, this.config.maximumLeash),
+        0,
+        1,
+      );
+      brake *= THREE.MathUtils.lerp(
+        CINEMATIC_QUALITY_SPEED_FLOOR,
+        1,
+        this.cinematicSupportQuality,
+      );
     } else {
       brake = THREE.MathUtils.clamp(1 - this.leash / this.config.maximumLeash, 0, 1);
     }
     this.route.advance(this.speed * dt * brake);
+  }
+
+  /**
+   * Distills the legs' recent truth into one smooth 0..1 signal: how many feet
+   * are healthy right now, and how often travelling foothold searches have been
+   * finding silk. A mid-swing foot is healthy — it is airborne by choice — so
+   * the rhythmic overlap of the gait cannot pulse this signal. Only feet that
+   * are held with nowhere to stand, or planted on invalid silk, count against
+   * her. Neither term reacts to a single step, which is the point: individual
+   * footfalls must never gate a fluid body.
+   */
+  private updateSupportQuality(dt: number): void {
+    let healthy = 0;
+    for (const [legId, contact] of this.contacts) {
+      if (this.cinematicFeet.get(legId)?.moving) {
+        healthy += 1;
+        continue;
+      }
+      if (
+        contact.isPlanted &&
+        contact.contactValid &&
+        contact.hasResolvedWorldPosition
+      ) {
+        healthy += 1;
+      }
+    }
+    const healthyTerm = THREE.MathUtils.clamp(
+      (healthy - CINEMATIC_QUALITY_HEALTHY_FLOOR) / CINEMATIC_QUALITY_HEALTHY_SPAN,
+      0,
+      1,
+    );
+    const target = Math.min(healthyTerm, this.footholdSearchEma);
+    this.cinematicSupportQuality +=
+      (target - this.cinematicSupportQuality)
+      * Math.min(1, dt * CINEMATIC_QUALITY_RESPONSE);
   }
 
   // ---------------------------------------------------------- cinematic gait
@@ -711,6 +901,8 @@ export class SpiderChoreographer {
     this.cinematicStepForward.copy(this.bodyForward);
     this.cinematicPlanningUp.copy(this.bodyUp);
     this.cinematicStepFramePending = false;
+    this.cinematicStepExpectedLandings = 0;
+    this.cinematicStepRealLandings = 0;
     this.cinematicLastGroupIndex = -1;
     for (const legId of SPIDER_LEG_IDS) {
       // settle() has just solved every available foot to real silk. Capture the
@@ -740,6 +932,8 @@ export class SpiderChoreographer {
     this.restPoseSettleClock = 0;
     this.restPoseActive = false;
     this.restPoseSettled = false;
+    this.restTuckSettled = false;
+    this.restTuckClock = 0;
     this.stationaryPoseKind = null;
   }
 
@@ -750,14 +944,18 @@ export class SpiderChoreographer {
     this.cinematicSupportForward.copy(this.bodyForward);
     this.cinematicStepForward.copy(this.bodyForward);
     this.cinematicStepFramePending = false;
+    this.cinematicStepExpectedLandings = 0;
+    this.cinematicStepRealLandings = 0;
     this.cinematicLastGroupIndex = -1;
     this.cinematicRecoveryCooldown.clear();
   }
 
   /**
-   * Showcase locomotion: the route owns body travel, a fixed gait owns the feet,
-   * and every claimed contact is real silk. Nothing in this method may stall the
-   * body because a foothold is missing or one planted address reached a limit.
+   * Showcase locomotion, hybrid form: the route steers a continuously moving
+   * body, an overlapping gait reaches for real silk beneath it, and the legs'
+   * aggregate success — not any individual footfall — throttles the speed.
+   * Sparse silk therefore slows her smoothly instead of gating her forward in
+   * landing-sized packets.
    */
   private updateCinematicLocomotion(dt: number): void {
     if (this.cinematicFeet.size === 0) {
@@ -768,6 +966,7 @@ export class SpiderChoreographer {
     // contacts before moving the body so their transported normals and support
     // geometry can turn her onto steep silk instead of leaving dorsal as world-up.
     this.refreshContacts();
+    this.updateSupportQuality(dt);
 
     // A completed stationary pose is a true hold, not another controller
     // chasing a moving equilibrium. Keep semantic contacts fresh so invalid
@@ -804,8 +1003,26 @@ export class SpiderChoreographer {
     // again before solving the visual legs and distributing their semantic load.
     this.refreshContacts();
     this.updateCinematicRestPose(dt);
+    this.updateRestArch(dt);
     this.solveCinematicFeet();
     this.loads.applyFixedStep(dt, this.bodyPosition);
+  }
+
+  /**
+   * Eases the rest arch multiplier into the solver: as she tucks, the knees
+   * rise until the femora read near-vertical and the patellae nearly meet
+   * above the body. Walking eases it back to the authored arch.
+   */
+  private updateRestArch(dt: number): void {
+    const gain = this.config.restArchGain;
+    if (gain === 1 && this.restArchBlend === 0) return;
+    const target = this.intent.kind === "rest" && !this.route.hasRoute ? 1 : 0;
+    this.restArchBlend += (target - this.restArchBlend) * Math.min(1, dt * 3);
+    if (Math.abs(this.restArchBlend - target) < 1e-3) this.restArchBlend = target;
+    const scale = THREE.MathUtils.lerp(1, gain, this.restArchBlend);
+    for (const legId of SPIDER_LEG_IDS) {
+      this.ik.setArchGainScale(legId, scale);
+    }
   }
 
   /** Returns the stationary presentation that currently owns the rig, if any. */
@@ -813,7 +1030,7 @@ export class SpiderChoreographer {
     if (this.intent.kind === "rest" || this.intent.kind === "freeze") {
       return this.intent.kind;
     }
-    return this.route.arrived ? "arrival" : null;
+    return this.cinematicArrivalComplete() ? "arrival" : null;
   }
 
   /**
@@ -854,7 +1071,10 @@ export class SpiderChoreographer {
       requestedKind === "arrival"
         ? this.route.arrived
         : !this.route.hasRoute && this.speed <= 0.015
-    );
+    ) &&
+      // True rest first draws the body up to its tucked standoff, so the
+      // snapshot below captures folded legs instead of the walking splay.
+      (requestedKind !== "rest" || this.restTuckSettled);
 
     if (!ready) {
       this.restPoseClock = 0;
@@ -872,6 +1092,8 @@ export class SpiderChoreographer {
         this.restContactChecks = 0;
         this.restPoseSettleClock = 0;
         this.restPoseSettled = false;
+        this.restTuckSettled = false;
+        this.restTuckClock = 0;
       }
       return;
     }
@@ -1203,8 +1425,44 @@ export class SpiderChoreographer {
 
     if (hasTravelPoint) {
       this.target.copy(this.travelPoint).addScaledVector(this.bodyUp, this.config.bodyStandoff);
-      const follow = 1 - Math.exp(-dt * 11);
-      this.bodyPosition.lerp(this.target, follow);
+      const follow = 1 - Math.exp(-dt * this.config.bodyFollowRate);
+      this.scratch.copy(this.target).sub(this.bodyPosition).multiplyScalar(follow);
+      // Smoothness outranks placement: a foot about to pin the body lets go
+      // and re-steps, rather than the body stopping. Feet that remain planted
+      // still keep the hard veto — they can never be dragged past the
+      // workspace their landing was chosen in.
+      this.releasePinnedCinematicContacts(this.scratch);
+      this.limitByReach(this.scratch, CINEMATIC_BODY_REACH_LIMIT);
+      this.bodyPosition.add(this.scratch);
+    } else if (
+      this.intent.kind === "rest" &&
+      !this.restPoseActive &&
+      this.cinematicMovingFeetCount() === 0
+    ) {
+      // A resting widow does not park at walking standoff: she draws herself up
+      // toward her contacts until the legs fold high, the femora stand nearly
+      // vertical, and the patellae converge over the midline. The feet stay
+      // exactly where they are — the shrinking coxa-to-contact distance is what
+      // folds the legs. Once the rest pose activates and locks its snapshot the
+      // body holds still, so this ease runs only during the approach.
+      this.restTuckClock += dt;
+      this.target
+        .copy(frame.center)
+        .addScaledVector(
+          this.bodyUp,
+          this.config.bodyStandoff * this.config.restStandoffScale,
+        );
+      const follow = 1 - Math.exp(-dt * this.config.restTuckRate);
+      this.scratch.copy(this.target).sub(this.bodyPosition);
+      const remaining = this.scratch.length();
+      this.scratch.multiplyScalar(follow);
+      this.limitByReach(this.scratch, CINEMATIC_BODY_REACH_LIMIT);
+      this.bodyPosition.add(this.scratch);
+      // The web may never allow the exact tuck; the clock keeps an unreachable
+      // ideal from deferring the rest snapshot forever.
+      if (remaining < REST_TUCK_EPSILON || this.restTuckClock > REST_TUCK_TIME_LIMIT) {
+        this.restTuckSettled = true;
+      }
     }
 
     this.scratch.copy(this.bodyPosition).sub(this.previousPosition).divideScalar(Math.max(dt, 1e-4));
@@ -1217,10 +1475,54 @@ export class SpiderChoreographer {
       worldFrame: { forward: this.bodyForward, up: this.bodyUp },
       thoraxHeight: 0,
       worldOffset: this.scratch,
-      pitch: THREE.MathUtils.clamp(-forwardSpeed * 0.06, -0.08, 0.08),
+      pitch: THREE.MathUtils.clamp(
+        -forwardSpeed * this.config.bodyLean,
+        -0.08,
+        0.08,
+      ),
     });
     this.swayAbdomen(forwardSpeed);
     this.rig.rootObject.updateMatrixWorld(true);
+  }
+
+  /**
+   * Releases any planted contact that leaves the body essentially no room to
+   * move along its intended direction, provided enough supports remain for the
+   * stance to stay believable. The released foot holds its pose, reports mild
+   * urgency, and is re-stepped by the ordinary gait within a cycle — while the
+   * body never stops. This is the smoothness-over-placement rule made literal:
+   * without it, one stretched leg on silk-poor web pinned the whole spider.
+   */
+  private releasePinnedCinematicContacts(delta: THREE.Vector3): void {
+    const proposed = delta.length();
+    if (proposed <= 1e-6) return;
+    this.direction.copy(delta).divideScalar(proposed);
+
+    let planted = this.plantedCount();
+    for (const legId of SPIDER_LEG_IDS) {
+      if (planted <= CINEMATIC_PINNED_SUPPORT_FLOOR) return;
+      const contact = this.contacts.get(legId)!;
+      if (!contact.isPlanted || !contact.hasResolvedWorldPosition) continue;
+      const state = this.cinematicFeet.get(legId);
+      if (!state || state.moving) continue;
+
+      const limit = this.rig.legs[legId].reach.max * CINEMATIC_BODY_REACH_LIMIT;
+      this.reachVector
+        .set(contact.worldPosition.x, contact.worldPosition.y, contact.worldPosition.z)
+        .sub(contact.reachOriginWorldPosition as THREE.Vector3);
+      const along = this.reachVector.dot(this.direction);
+      const discriminant =
+        along * along + limit * limit - this.reachVector.lengthSq();
+      const room =
+        discriminant < 0 ? 0 : Math.max(0, along + Math.sqrt(discriminant));
+      if (room > CINEMATIC_PINNED_ROOM) continue;
+
+      state.address = null;
+      contact.beginRelease();
+      contact.release();
+      this.loads.releaseFootLoad(legId);
+      planted -= 1;
+    }
   }
 
   private advanceCinematicFeet(dt: number): number {
@@ -1249,24 +1551,49 @@ export class SpiderChoreographer {
       const p = THREE.MathUtils.clamp(state.elapsed / state.duration, 0, 1);
       const eased = p * p * (3 - 2 * p);
       state.position.copy(state.start).lerp(state.destination, eased);
-      state.position.addScaledVector(state.up, Math.sin(Math.PI * p) * 0.075);
+      state.position.addScaledVector(
+        state.up,
+        Math.sin(Math.PI * p)
+          * this.config.swingLift
+          * CINEMATIC_SWING_LIFT_SCALE[legId[1] as "1" | "2" | "3" | "4"],
+      );
       if (p >= 1) {
         state.position.copy(state.destination);
         state.moving = false;
         if (state.address) {
           this.contacts.get(legId)!.plant(state.address);
           this.onFootPlant?.(legId, state.address);
+          if (this.cinematicStepFramePending) {
+            this.cinematicStepRealLandings += 1;
+          }
         }
       } else {
         movingFeet += 1;
       }
     }
 
-    // A turning pair lands before its heading is handed to the thorax. While
-    // the feet were airborne, the previous support frame kept the body braced.
+    // A turning pair lands before its heading is handed to the thorax. Real
+    // silk earns the full slice; misses still earn most of it — the stepping
+    // gesture sells the turn, and a heading that can only advance on perfect
+    // landings strands the spider in silk-poor corners.
     if (movingFeet === 0 && this.cinematicStepFramePending) {
-      this.cinematicSupportForward.copy(this.cinematicStepForward).normalize();
+      const landingRatio = this.cinematicStepExpectedLandings > 0
+        ? THREE.MathUtils.lerp(
+            CINEMATIC_TURN_MISS_AUTHORITY,
+            1,
+            this.cinematicStepRealLandings / this.cinematicStepExpectedLandings,
+          )
+        : 1;
+      this.cinematicSupportForward
+        .lerp(this.cinematicStepForward, landingRatio)
+        .addScaledVector(
+          this.cinematicPlanningUp,
+          -this.cinematicSupportForward.dot(this.cinematicPlanningUp),
+        )
+        .normalize();
       this.cinematicStepFramePending = false;
+      this.cinematicStepExpectedLandings = 0;
+      this.cinematicStepRealLandings = 0;
     }
 
     return movingFeet;
@@ -1277,7 +1604,15 @@ export class SpiderChoreographer {
     // start another lift after the caller has asked the spider to hold still.
     if (!this.route.hasRoute) return;
 
-    const travelling = this.speed > 0.035 && this.route.hasRoute && !this.route.arrived;
+    const arrivalBodyLag = this.route.arrived
+      && this.bodyPosition.distanceTo(
+        this.target
+          .copy(this.travelPoint)
+          .addScaledVector(this.bodyUp, this.config.bodyStandoff),
+      ) > 0.035;
+    const travelling = this.speed > 0.035
+      && this.route.hasRoute
+      && (!this.route.arrived || arrivalBodyLag);
 
     // Raised rest feet were already unsupported, so give them the first swings
     // on departure without releasing any of the grounded support set. Keeping
@@ -1312,6 +1647,8 @@ export class SpiderChoreographer {
       }
     }
 
+    if (this.cinematicStepClock > 0) return;
+
     let worstLag = 0;
     for (const legId of SPIDER_LEG_IDS) {
       const state = this.cinematicFeet.get(legId)!;
@@ -1319,31 +1656,90 @@ export class SpiderChoreographer {
       worstLag = Math.max(worstLag, state.position.distanceTo(this.aim));
     }
 
-    if (movingFeet === 0 && this.cinematicStepClock <= 0) {
-      const turnError = this.planCinematicStepForward();
-      const turning = turnError > CINEMATIC_TURN_DEADBAND;
-      // Once the cursor has arrived, silk movement may leave an exact footfall
-      // away from authored FootHome forever. Finish any outstanding turn, but
-      // never interpret that static mismatch as permission to replant again.
-      if (!(travelling || (!this.route.arrived && worstLag > 0.24) || turning)) {
-        return;
+    const turnError = this.planCinematicStepForward();
+    // Any residual turn keeps the gait willing to step; only a genuine corner
+    // demands the careful sequential mode. Splitting these is what stops the
+    // fluid gait from hitching at every few-degree polyline kink of the route.
+    const turnPending = turnError > CINEMATIC_TURN_DEADBAND;
+    const careful = turnError > CINEMATIC_TURN_FLOW_LIMIT;
+
+    if (movingFeet > 0) {
+      // Overlapped stepping: on confident travel the next pair may launch
+      // while the current pair finishes its swing, so a reaching leg is always
+      // on screen. Anything careful — a real corner, an unresolved turn frame —
+      // waits for a fully landed support set instead.
+      if (!travelling || careful || this.cinematicStepFramePending) return;
+      if (movingFeet > CINEMATIC_MAX_OVERLAP_FEET) return;
+      for (const foot of this.cinematicFeet.values()) {
+        if (
+          foot.moving &&
+          foot.elapsed < foot.duration * CINEMATIC_OVERLAP_PROGRESS
+        ) {
+          return;
+        }
       }
+    }
 
-      // Each planted pair earns at most one turn slice. Give the thorax time to
-      // consume that slice before aiming another pair farther around the corner;
-      // otherwise the planned coxa sector can outrun its repaired ±34.5° range.
-      const bodySupportLag = this.cinematicPlanarAngle(
-        this.bodyForward,
-        this.cinematicSupportForward,
-      );
-      if (turning && bodySupportLag > CINEMATIC_MAX_BODY_SUPPORT_LAG) return;
+    // Once the cursor has arrived, silk movement may leave an exact footfall
+    // away from authored FootHome forever. Finish any outstanding turn, but
+    // never interpret that static mismatch as permission to replant again.
+    if (
+      !(travelling
+        || (!this.route.arrived && worstLag > CINEMATIC_STANCE_REPLANT_LAG)
+        || turnPending)
+    ) {
+      return;
+    }
 
-      const group = this.selectCinematicStepGroup(turnError, travelling);
+    // Each planted pair earns at most one turn slice. Give the thorax time to
+    // consume that slice before aiming another pair farther around the corner;
+    // otherwise the planned coxa sector can outrun its repaired ±34.5° range.
+    const bodySupportLag = this.cinematicPlanarAngle(
+      this.bodyForward,
+      this.cinematicSupportForward,
+    );
+    if (careful && bodySupportLag > CINEMATIC_MAX_BODY_SUPPORT_LAG) return;
+
+    const group = this.selectCinematicStepGroup(turnError, travelling);
+    if (!group) return;
+
+    if (careful) {
+      // Sequential land-then-authorize machinery: the turn is only handed to
+      // the thorax once this pair has stepped into it.
       this.cinematicStepFramePending = true;
-      this.cinematicStepClock = travelling ? 0.025 : 0.08;
+      this.cinematicStepExpectedLandings = group.length;
+      this.cinematicStepRealLandings = 0;
+    } else {
+      // The flowing gait carries small heading changes continuously: each
+      // launch eases the support frame toward the planned stance instead of
+      // waiting for a per-pair handoff.
+      this.cinematicSupportForward
+        .lerp(this.cinematicStepForward, 0.5)
+        .addScaledVector(
+          this.cinematicPlanningUp,
+          -this.cinematicSupportForward.dot(this.cinematicPlanningUp),
+        )
+        .normalize();
+    }
+
+    if (travelling && !careful) {
+      // Rhythmic cadence: the launch-to-launch period is a fixed fraction of
+      // the swing, which yields a steady walking duty factor instead of a
+      // land-everything-then-burst cycle.
+      let longestSwing = 0;
       for (const legId of group) {
-        this.beginCinematicStep(legId, travelling, this.cinematicStepForward);
+        longestSwing = Math.max(
+          longestSwing,
+          this.config.swingDuration
+            * CINEMATIC_SWING_DURATION_SCALE[legId[1] as "1" | "2" | "3" | "4"],
+        );
       }
+      this.cinematicStepClock = longestSwing * CINEMATIC_OVERLAP_CADENCE;
+    } else {
+      this.cinematicStepClock = travelling ? 0.03 : 0.08;
+    }
+    for (const legId of group) {
+      this.beginCinematicStep(legId, travelling, this.cinematicStepForward);
     }
   }
 
@@ -1451,39 +1847,55 @@ export class SpiderChoreographer {
     return Math.abs(signedTurn);
   }
 
+  /** A pair is unavailable while recovering from the rest pose or mid-swing. */
+  private cinematicGroupBlocked(index: number): boolean {
+    return CINEMATIC_GAIT[index].some(
+      (legId) =>
+        this.cinematicRecoveryCooldown.has(legId) ||
+        this.cinematicFeet.get(legId)?.moving === true,
+    );
+  }
+
   /** During a turn, move the pair furthest from the planned stance first. */
   private selectCinematicStepGroup(
     turnError: number,
     travelling: boolean,
-  ): readonly SpiderLegId[] {
+  ): readonly SpiderLegId[] | null {
     let worstNormalizedResidual = 0;
+    let worstContactUrgency = 0;
     for (const legId of SPIDER_LEG_IDS) {
       const result = this.ik.getResult(legId);
-      if (!result || !Number.isFinite(result.residual)) continue;
-      worstNormalizedResidual = Math.max(
-        worstNormalizedResidual,
-        result.residual / Math.max(1e-3, this.rig.legs[legId].reach.max),
+      if (result && Number.isFinite(result.residual)) {
+        worstNormalizedResidual = Math.max(
+          worstNormalizedResidual,
+          result.residual / Math.max(1e-3, this.rig.legs[legId].reach.max),
+        );
+      }
+      worstContactUrgency = Math.max(
+        worstContactUrgency,
+        this.cinematicContactUrgency(legId),
       );
     }
 
-    // Preserve the clean authored alternating gait on ordinary straight travel.
-    // Once a joint-limited leg is visibly missing its target, however, waiting
-    // for a full four-pair cycle is exactly what winds it behind the thorax.
-    const urgentIK = worstNormalizedResidual > CINEMATIC_IK_URGENCY_THRESHOLD;
-    if (turnError <= CINEMATIC_TURN_DEADBAND && !urgentIK) {
+    // Preserve the clean authored alternating gait through ordinary travel,
+    // including the small heading drift the flowing mode absorbs. Once a
+    // joint-limited leg is visibly missing its target, however, waiting for a
+    // full four-pair cycle is exactly what winds it behind the thorax.
+    const urgentAnatomy = worstNormalizedResidual > CINEMATIC_IK_URGENCY_THRESHOLD
+      || worstContactUrgency >= 1.15;
+    if (turnError <= CINEMATIC_TURN_FLOW_LIMIT && !urgentAnatomy) {
       const start = this.cinematicGaitIndex % CINEMATIC_GAIT.length;
-      let index = start;
+      let index = -1;
       for (let offset = 0; offset < CINEMATIC_GAIT.length; offset += 1) {
         const candidate = (start + offset) % CINEMATIC_GAIT.length;
-        if (
-          CINEMATIC_GAIT[candidate].every(
-            (legId) => !this.cinematicRecoveryCooldown.has(legId),
-          )
-        ) {
+        if (!this.cinematicGroupBlocked(candidate)) {
           index = candidate;
           break;
         }
       }
+      // Every pair is either mid-swing or cooling down; launch nothing rather
+      // than double-book a foot that is already in the air.
+      if (index < 0) return null;
       const group = CINEMATIC_GAIT[index];
       this.cinematicGaitIndex = index + 1;
       this.cinematicLastGroupIndex = index;
@@ -1500,13 +1912,7 @@ export class SpiderChoreographer {
       // but never in two consecutive lifts. This supplies a real support swap
       // without forcing an unhappy leg to wait through all eight feet.
       if (index === this.cinematicLastGroupIndex && CINEMATIC_GAIT.length > 1) continue;
-      if (
-        CINEMATIC_GAIT[index].some(
-          (legId) => this.cinematicRecoveryCooldown.has(legId),
-        )
-      ) {
-        continue;
-      }
+      if (this.cinematicGroupBlocked(index)) continue;
       let score = 0;
       for (const legId of CINEMATIC_GAIT[index]) {
         this.planCinematicLanding(
@@ -1518,6 +1924,7 @@ export class SpiderChoreographer {
         );
         score += this.cinematicFeet.get(legId)!.position.distanceTo(this.aim)
           / Math.max(1e-3, this.rig.legs[legId].reach.max);
+        score += CINEMATIC_IK_URGENCY_WEIGHT * this.cinematicContactUrgency(legId);
 
         const result = this.ik.getResult(legId);
         if (result && Number.isFinite(result.residual)) {
@@ -1532,12 +1939,36 @@ export class SpiderChoreographer {
       }
     }
 
-    // Defensive fallback for a future one-group gait definition.
-    if (bestIndex < 0) bestIndex = start;
+    // Every candidate pair is blocked; wait a frame rather than force one.
+    if (bestIndex < 0) return null;
     this.cinematicLastGroupIndex = bestIndex;
     this.cinematicGaitIndex = bestIndex + 1;
     this.cinematicRecoveryCooldown.clear();
     return CINEMATIC_GAIT[bestIndex];
+  }
+
+  /**
+   * Contact strain must remain visible to gait ranking even when presentation IK
+   * has clamped its target and therefore reports a deceptively small residual.
+   *
+   * A planted contact gone invalid (broken or vanished silk) is an emergency.
+   * A foot that simply has no address is not: it is already held in a plausible
+   * pose, and treating it as urgent let one silk-poor leg monopolize the gait —
+   * the same unlucky pairs stepped over and over while every planted leg
+   * strained in place and vetoed the body. Mild pressure keeps it re-searching
+   * through the ordinary rotation without hijacking it.
+   */
+  private cinematicContactUrgency(legId: SpiderLegId): number {
+    const contact = this.contacts.get(legId)!;
+    if (!contact.isPlanted) {
+      return 0.35;
+    }
+    if (!contact.contactValid || !contact.hasResolvedWorldPosition) {
+      return 1.5;
+    }
+    const limit = this.rig.legs[legId].reach.max * CINEMATIC_BODY_REACH_LIMIT;
+    const safe = limit * 0.84;
+    return Math.max(0, (contact.currentReachDistance - safe) / Math.max(1e-3, limit - safe));
   }
 
   /** Solves visual legs without ever rewriting their planted world anchors. */
@@ -1578,7 +2009,17 @@ export class SpiderChoreographer {
 
     const index = Number(legId[1]);
     if (travelling) {
-      target.addScaledVector(landingForward, 0.18 + (4 - index) * 0.025);
+      // The posterior pairs need a full prograde stroke so they can extend and
+      // push after planting. The old descending lead gave pair IV the shortest
+      // step and left it trailing for most of each gait cycle.
+      const posteriorLead = Math.max(0, index - 2) * 0.0125;
+      // Pair I reaches beyond everyone: the exploring stride that probes the
+      // silk ahead and then pulls the body onto it.
+      const exploreLead = index === 1 ? FRONT_EXPLORE_LEAD : 0;
+      target.addScaledVector(
+        landingForward,
+        this.config.stepLead + posteriorLead + exploreLead,
+      );
     }
     target.addScaledVector(
       this.outwardForFrame(legId, landingForward, landingUp),
@@ -1632,7 +2073,6 @@ export class SpiderChoreographer {
   ): void {
     const state = this.cinematicFeet.get(legId)!;
     state.start.copy(state.position);
-    const index = Number(legId[1]);
     state.address = this.planCinematicLanding(
       legId,
       travelling,
@@ -1642,6 +2082,17 @@ export class SpiderChoreographer {
     );
     state.up.copy(this.cinematicPlanningUp);
 
+    // The legs' recent search record is the body's throttle. Only travelling
+    // searches count: rest recoveries lowering a parked foot say nothing about
+    // whether the silk ahead can be walked.
+    if (travelling) {
+      this.footholdSearchEma = THREE.MathUtils.lerp(
+        this.footholdSearchEma,
+        state.address ? 1 : 0,
+        CINEMATIC_SEARCH_EMA_ALPHA,
+      );
+    }
+
     const contact = this.contacts.get(legId)!;
     if (contact.isPlanted) {
       contact.beginRelease();
@@ -1649,7 +2100,8 @@ export class SpiderChoreographer {
       this.loads.releaseFootLoad(legId);
     }
     state.elapsed = 0;
-    state.duration = 0.17 + index * 0.008;
+    state.duration = this.config.swingDuration
+      * CINEMATIC_SWING_DURATION_SCALE[legId[1] as "1" | "2" | "3" | "4"];
     state.moving = true;
   }
 
@@ -1765,6 +2217,33 @@ export class SpiderChoreographer {
     // frame at a junction.
     if (this.desiredUp.dot(this.bodyUp) < 0) this.desiredUp.negate();
 
+    // A widow travels her web dorsal-side down, or occasionally standing on
+    // top — never rolled sideways along a strand. Contact normals are seeded
+    // from the body's own up axis, so nothing external ever re-anchors roll to
+    // gravity: a sideways roll acquired while traversing would be permanent.
+    // Bias the desired dorsal toward world-vertical — hanging by default,
+    // upright only while she is already clearly on top — and fade the bias out
+    // on steep travel so a vertical climb keeps its pitch: only the roll
+    // freedom perpendicular to the path is negotiated away.
+    const dorsalPreference = this.config.dorsalPreference;
+    if (dorsalPreference > 0) {
+      this.scratch.set(targetForward.x, targetForward.y, targetForward.z);
+      const forwardLengthSq = this.scratch.lengthSq();
+      const steepness = forwardLengthSq > 1e-8
+        ? Math.abs(this.scratch.y) / Math.sqrt(forwardLengthSq)
+        : 0;
+      const bias = dorsalPreference * (1 - steepness * steepness);
+      if (bias > 1e-3) {
+        const hemisphere = this.bodyUp.y > 0.35 ? 1 : -1;
+        this.desiredUp.lerp(this.scratch.set(0, hemisphere, 0), bias);
+        if (this.desiredUp.lengthSq() <= 1e-8) {
+          this.desiredUp.copy(this.bodyUp);
+        } else {
+          this.desiredUp.normalize();
+        }
+      }
+    }
+
     // Anterior follows travel, but travel must be tangent to the support plane.
     this.frameForward.set(targetForward.x, targetForward.y, targetForward.z);
     this.frameForward.addScaledVector(
@@ -1832,7 +2311,7 @@ export class SpiderChoreographer {
    * largest s where |v - s*u| stays within reach. Take the smallest s over all
    * feet. That is the whole reach budget.
    */
-  private limitByReach(delta: THREE.Vector3): void {
+  private limitByReach(delta: THREE.Vector3, reachRatio = REACH_LIMIT): void {
     const proposed = delta.length();
     if (proposed <= 1e-6) {
       return;
@@ -1845,7 +2324,7 @@ export class SpiderChoreographer {
       if (!contact.isPlanted || !contact.hasResolvedWorldPosition) {
         continue;
       }
-      const limit = this.rig.legs[legId].reach.max * REACH_LIMIT;
+      const limit = this.rig.legs[legId].reach.max * reachRatio;
       this.reachVector
         .set(contact.worldPosition.x, contact.worldPosition.y, contact.worldPosition.z)
         .sub(contact.reachOriginWorldPosition as THREE.Vector3);

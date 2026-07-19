@@ -3,9 +3,9 @@
 An autonomous pet black widow living in a taut, responsive three-dimensional web.
 
 The application favors a convincing creature over strict simulation. Semantic
-silk addresses guide routes, suggested contacts return a little weight and
-vibration to the web, and a cinematic gait keeps Vesper moving quickly and
-elegantly when exact contact would look worse.
+silk addresses guide routes, planted contacts earn body travel and return a
+little weight and vibration to the web, and a cinematic gait keeps Vesper moving
+quickly and elegantly across sparse silk.
 
 ## Run
 

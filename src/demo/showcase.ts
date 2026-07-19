@@ -596,27 +596,40 @@ let choreographer: SpiderChoreographer | null = null;
 let loadedRig: Awaited<ReturnType<typeof loadSpiderRig>> | null = null;
 
 const SHOWCASE_CHOREOGRAPHY = {
-  // The habitat is theater. Routes provide direction, while every claimed
-  // footfall is an exact reachable silk point; missing contacts may not stop her.
+  // Routes steer a continuously moving body; the legs' aggregate success at
+  // finding real silk throttles its speed. Sparse silk slows her smoothly
+  // instead of gating travel in landing-sized packets.
   cinematicLocomotion: true,
-  travelSpeed: 0.64,
-  speedResponse: 5.5,
+  // This is her web: she crosses it at speed, with strides long enough that
+  // the pace is still honestly earned by real footfalls.
+  travelSpeed: 0.8,
+  speedResponse: 7,
   stepTriggerDistance: 0.2,
   stepUrgentDistance: 0.36,
-  stepLead: 0.23,
+  stepLead: 0.3,
   footholdSearchRadius: 1.12,
   legSweepDegrees: 172,
   midlineTolerance: 0.24,
-  swingDuration: 0.32,
-  swingLift: 0.085,
+  // Per-pair scales in SpiderChoreographer turn these into the front-explore /
+  // rear-assist profile: pair I swings longest and highest, pair IV quick and low.
+  swingDuration: 0.25,
+  swingLift: 0.1,
   minimumPlantedFeet: 4,
   maximumSwingingFeet: 2,
   maximumLeash: 0.72,
-  bodyFollowRate: 5.4,
-  bodyTurnRate: 3.8,
+  bodyFollowRate: 7.5,
+  bodyTurnRate: 4.8,
   bodyLean: 0.12,
   abdomenLag: 0.18,
-  pauseChancePerSecond: 0.22,
+  // She hangs beneath her silk, occasionally stands on top, never sideways.
+  dorsalPreference: 0.8,
+  // Rest: draw up close to the web, femora near vertical, patellae converging.
+  restStandoffScale: 0.5,
+  restArchGain: 1.24,
+  // A master of her own web pauses rarely and briefly; frequent dead stops
+  // mid-route read as hesitation, not thought.
+  pauseChancePerSecond: 0.08,
+  pauseDuration: { min: 0.1, max: 0.35 },
   bodyWeight: 0.95,
   // Repaired-rest joint limits, including the coxa's broader anatomical sector.
   // See ChoreographyConfig.jointLimitScale.

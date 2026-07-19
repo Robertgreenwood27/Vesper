@@ -6,8 +6,10 @@
  */
 export interface ChoreographyConfig {
   /**
-   * Lets the route drive the body while silk addresses merely suggest footfalls.
-   * Intended for the pet showcase; the lab keeps strict contact locomotion.
+   * Hybrid showcase locomotion: the route steers a continuously moving body
+   * while an overlapping gait reaches for real silk beneath it, and the legs'
+   * aggregate success throttles the speed. Intended for the pet showcase; the
+   * lab keeps strict contact locomotion.
    */
   cinematicLocomotion: boolean;
   /** Model units per second at full confidence on comfortable silk. */
@@ -72,9 +74,14 @@ export interface ChoreographyConfig {
    */
   jointLimitScale: number;
 
-  /** Seconds for one swing at nominal distance. Scaled by real distance. */
+  /**
+   * Seconds for one swing at nominal distance. Scaled by real distance.
+   * Cinematic locomotion scales this per pair: front legs take the longest,
+   * most deliberate swings (they explore), the posterior pairs the quickest
+   * (they assist). See the pair profiles in SpiderChoreographer.
+   */
   swingDuration: number;
-  /** Peak lift of the swing arc, along body-up. */
+  /** Peak lift of the swing arc, along body-up. Scaled per pair like duration. */
   swingLift: number;
   /** Never allow fewer than this many planted feet. The only balance rule. */
   minimumPlantedFeet: number;
@@ -97,6 +104,17 @@ export interface ChoreographyConfig {
   bodyLean: number;
   /** Abdomen counter-rotation against acceleration. The strongest "alive" cue. */
   abdomenLag: number;
+  /**
+   * How strongly the dorsal axis is rolled toward world-vertical, 0..1.
+   *
+   * A widow travels her web hanging dorsal-side down, or occasionally standing
+   * on top — never clinging sideways with her body rolled along a strand.
+   * Contact normals are seeded from the body's own up axis, so without this
+   * bias nothing ever re-anchors her roll to gravity and any sideways roll she
+   * picks up while traversing becomes permanent. Weakened automatically on
+   * steep travel so a vertical silk climb is not fought.
+   */
+  dorsalPreference: number;
 
   /** Idle breathing amplitude, in model units. */
   breathAmplitude: number;
@@ -105,6 +123,21 @@ export interface ChoreographyConfig {
 
   /** Seconds of true rest before unsupported legs assume their parked pose. */
   restPoseDelay: number;
+  /**
+   * Fraction of bodyStandoff kept while resting. A resting widow draws herself
+   * up toward her contacts, folding the legs until the femora stand nearly
+   * vertical and the patellae converge over the midline; walking standoff held
+   * at rest is what left her splayed flat instead.
+   */
+  restStandoffScale: number;
+  /** Follow rate of the slow draw toward the rest standoff. */
+  restTuckRate: number;
+  /**
+   * Multiplier on every leg's IK arch while resting. Raises the knees so the
+   * femora read vertical and the patellae nearly touch above the body. 1
+   * disables the rest arch entirely.
+   */
+  restArchGain: number;
   /** Follow rate for easing unsupported feet into or out of the raised pose. */
   restPoseResponse: number;
   /** Faster follow rate that keeps planted resting feet on moving silk. */
@@ -159,18 +192,24 @@ export const DEFAULT_CHOREOGRAPHY: ChoreographyConfig = {
   bodyTurnRate: 4.0,
   bodyLean: 0.22,
   abdomenLag: 0.3,
+  dorsalPreference: 0.55,
 
   breathAmplitude: 0.006,
   breathRate: 0.55,
 
   restPoseDelay: 0.3,
+  restStandoffScale: 0.55,
+  restTuckRate: 2.4,
+  restArchGain: 1.22,
   restPoseResponse: 5.5,
   restContactResponse: 24,
   cinematicContactResponse: 20,
   minimumRaisedRestFeet: 1,
   maximumRaisedRestFeet: 3,
-  raisedRestPlanarReach: 0.54,
-  raisedRestLift: 0.42,
+  // Tight and high: the characteristic parked rest folds a free leg in close so
+  // its patella rises over the midline rather than sweeping out sideways.
+  raisedRestPlanarReach: 0.32,
+  raisedRestLift: 0.52,
 
   pauseChancePerSecond: 0.28,
   pauseDuration: { min: 0.12, max: 0.55 },

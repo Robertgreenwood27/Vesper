@@ -110,6 +110,8 @@ interface RuntimeChain {
   readonly preferredPoleWorld: THREE.Vector3;
   readonly reach?: SpiderIKReach;
   readonly preferredArchGain: number;
+  /** Runtime multiplier on the authored arch; e.g. the tucked resting pose. */
+  archGainScale: number;
   readonly result: SpiderIKSolveResult;
   valid: boolean;
   invalidReason: string;
@@ -197,6 +199,17 @@ export class SpiderIKSolver {
 
   getResult(chainId: string): SpiderIKSolveResult | undefined {
     return this.chains.get(chainId)?.result;
+  }
+
+  /**
+   * Scales a chain's rest-derived arch at runtime. Above 1 the knees rise —
+   * the resting fold where the femora stand near vertical; back at 1 the
+   * authored walking arch returns. Unknown chains are ignored.
+   */
+  setArchGainScale(chainId: string, scale: number): void {
+    const chain = this.chains.get(chainId);
+    if (!chain) return;
+    chain.archGainScale = clampFinite(scale, 1, 0.6, 1.6);
   }
 
   solve(
@@ -418,6 +431,7 @@ export class SpiderIKSolver {
         0.72,
         1.38,
       ),
+      archGainScale: 1,
       result,
       valid: true,
       invalidReason: '',
@@ -658,11 +672,14 @@ export class SpiderIKSolver {
     const longitudinalScale = restEndLength > EPSILON
       ? clampFinite(targetDistance / restEndLength, 1, 0.2, 1.4)
       : 1;
+    // The runtime scale widens the authored ceiling deliberately: the tucked
+    // rest arch must be allowed to exceed the walking clamp or it is a no-op.
+    const archGain = chain.preferredArchGain * chain.archGainScale;
     const perpendicularScale = clampFinite(
-      (0.72 + longitudinalScale * 0.28) * chain.preferredArchGain,
-      chain.preferredArchGain,
+      (0.72 + longitudinalScale * 0.28) * archGain,
+      archGain,
       0.72,
-      1.38,
+      1.38 * Math.max(1, chain.archGainScale),
     );
 
     for (let i = 0; i <= chain.drivenCount; i += 1) {
