@@ -222,3 +222,302 @@ export class Firefly {
     this.sprite.scale.setScalar(0.2 + flash * 0.34);
   }
 }
+
+export interface WeatherOverrides {
+  readonly live: boolean;
+  readonly clear: boolean;
+  readonly clouds: boolean;
+  readonly humidity: boolean;
+  readonly rain: boolean;
+  readonly storm: boolean;
+}
+
+interface WeatherReading {
+  readonly temperature: number;
+  readonly humidity: number;
+  readonly dewPoint: number;
+  readonly precipitation: number;
+  readonly rain: number;
+  readonly snowfall: number;
+  readonly weatherCode: number;
+  readonly cloudCover: number;
+  readonly isDay: boolean;
+}
+
+interface WeatherResponse extends Partial<WeatherReading> {
+  readonly available?: unknown;
+}
+
+const CONDENSATION_VERTEX = /* glsl */ `
+  attribute float threshold;
+  attribute float dropScale;
+  uniform float reveal;
+  varying float vVisible;
+  void main() {
+    vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+    vVisible = smoothstep(threshold, min(1.0, threshold + 0.18), reveal);
+    gl_PointSize = dropScale * vVisible * (135.0 / max(0.5, -mvPosition.z));
+    gl_Position = projectionMatrix * mvPosition;
+  }
+`;
+
+const CONDENSATION_FRAGMENT = /* glsl */ `
+  varying float vVisible;
+  void main() {
+    vec2 p = gl_PointCoord - vec2(0.5);
+    float radius = length(p) * 2.0;
+    if (radius > 1.0 || vVisible < 0.01) discard;
+    float body = smoothstep(1.0, 0.62, radius) * 0.11;
+    float rim = smoothstep(1.0, 0.74, radius) - smoothstep(0.76, 0.48, radius);
+    float glint = smoothstep(0.28, 0.0, length(p - vec2(-0.14, 0.17)));
+    float shade = smoothstep(0.42, 0.0, length(p - vec2(0.15, -0.16))) * 0.05;
+    float alpha = (body + rim * 0.2 + glint * 0.64 - shade) * vVisible;
+    gl_FragColor = vec4(0.77, 0.86, 0.9, max(0.0, alpha));
+  }
+`;
+
+function weatherReading(value: unknown): WeatherReading | null {
+  if (!value || typeof value !== "object") return null;
+  const candidate = value as WeatherResponse;
+  const numbers = [
+    candidate.temperature,
+    candidate.humidity,
+    candidate.dewPoint,
+    candidate.precipitation,
+    candidate.rain,
+    candidate.snowfall,
+    candidate.weatherCode,
+    candidate.cloudCover,
+  ];
+  if (
+    candidate.available !== true ||
+    numbers.some((entry) => typeof entry !== "number" || !Number.isFinite(entry)) ||
+    typeof candidate.isDay !== "boolean"
+  ) {
+    return null;
+  }
+  return candidate as WeatherReading;
+}
+
+/**
+ * Lets the room outside the sealed habitat share the visitor's weather.
+ * Nothing in this system renders precipitation or wind inside the jar. Wet
+ * weather arrives as glass condensation and cool, cloud-softened daylight;
+ * lightning is only an off-screen exterior source.
+ */
+export class LiveWeatherAtmosphere {
+  private readonly condensation: THREE.Points;
+  private readonly condensationMaterial: THREE.ShaderMaterial;
+  private readonly skyLight: THREE.DirectionalLight;
+  private readonly lightning: THREE.SpotLight;
+  private reading: WeatherReading | null = null;
+  private refreshing = false;
+  private nextRefreshAt = 0;
+  private reveal = 0;
+  private condensationTarget = 0;
+  private daylight = 0;
+  private nextLightningAt = Number.POSITIVE_INFINITY;
+  private lightningStartedAt = Number.NEGATIVE_INFINITY;
+  private stormWasActive = false;
+
+  constructor(
+    scene: THREE.Scene,
+    center: THREE.Vector3,
+    radius: number,
+    height: number,
+    dropCount: number,
+    private readonly overrides: WeatherOverrides,
+  ) {
+    const positions = new Float32Array(dropCount * 3);
+    const thresholds = new Float32Array(dropCount);
+    const scales = new Float32Array(dropCount);
+    // A fixed seed keeps the droplets from rearranging themselves on reload.
+    let seed = 0x6d2b79f5;
+    const random = (): number => {
+      seed = Math.imul(seed ^ (seed >>> 15), seed | 1);
+      seed ^= seed + Math.imul(seed ^ (seed >>> 7), seed | 61);
+      return ((seed ^ (seed >>> 14)) >>> 0) / 4_294_967_296;
+    };
+    for (let i = 0; i < dropCount; i += 1) {
+      const angle = random() * Math.PI * 2;
+      const y = 0.65 + Math.pow(random(), 0.82) * (height - 1.25);
+      positions[i * 3] = center.x + Math.cos(angle) * (radius - 0.035);
+      positions[i * 3 + 1] = y;
+      positions[i * 3 + 2] = center.z + Math.sin(angle) * (radius - 0.035);
+      thresholds[i] = 0.12 + random() * 0.86;
+      scales[i] = 0.34 + random() * random() * 0.92;
+    }
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+    geometry.setAttribute("threshold", new THREE.BufferAttribute(thresholds, 1));
+    geometry.setAttribute("dropScale", new THREE.BufferAttribute(scales, 1));
+    this.condensationMaterial = new THREE.ShaderMaterial({
+      vertexShader: CONDENSATION_VERTEX,
+      fragmentShader: CONDENSATION_FRAGMENT,
+      uniforms: { reveal: { value: 0 } },
+      transparent: true,
+      depthWrite: false,
+      blending: THREE.NormalBlending,
+    });
+    this.condensation = new THREE.Points(geometry, this.condensationMaterial);
+    this.condensation.frustumCulled = false;
+    this.condensation.renderOrder = 5;
+    this.condensation.visible = false;
+    scene.add(this.condensation);
+
+    this.skyLight = new THREE.DirectionalLight(0x9bb6ca, 0);
+    this.skyLight.position.set(center.x + radius * 1.8, height * 1.35, center.z + radius * 2.4);
+    scene.add(this.skyLight);
+
+    const lightningTarget = new THREE.Object3D();
+    lightningTarget.position.set(center.x, height * 0.55, center.z);
+    scene.add(lightningTarget);
+    this.lightning = new THREE.SpotLight(0xcde6ff, 0, 70, Math.PI * 0.31, 0.72, 1.25);
+    this.lightning.position.set(center.x - radius * 3.2, height * 1.45, center.z + radius * 2.5);
+    this.lightning.target = lightningTarget;
+    scene.add(this.lightning);
+
+    if (this.overrides.live) void this.refresh();
+  }
+
+  get silkCondensed(): boolean {
+    return this.condensationTarget >= 0.76;
+  }
+
+  get hasConditions(): boolean {
+    return this.reading !== null ||
+      this.overrides.clear ||
+      this.overrides.clouds ||
+      this.overrides.humidity ||
+      this.overrides.rain ||
+      this.overrides.storm;
+  }
+
+  private async refresh(): Promise<void> {
+    if (this.refreshing || !this.overrides.live) return;
+    this.refreshing = true;
+    try {
+      const response = await fetch("/api/weather", {
+        headers: { accept: "application/json" },
+        cache: "default",
+      });
+      if (response.ok) this.reading = weatherReading(await response.json());
+    } catch {
+      // Weather is an ambient enhancement. Offline play remains unchanged.
+    } finally {
+      this.refreshing = false;
+      this.nextRefreshAt = Date.now() + 15 * 60 * 1_000;
+    }
+  }
+
+  private conditions(): WeatherReading | null {
+    let current = this.reading;
+    if (this.overrides.clear) {
+      current = {
+        temperature: current?.temperature ?? 20,
+        humidity: 34,
+        dewPoint: 3,
+        precipitation: 0,
+        rain: 0,
+        snowfall: 0,
+        weatherCode: 0,
+        cloudCover: 0,
+        isDay: true,
+      };
+    }
+    if (this.overrides.clouds) {
+      current = { ...(current ?? this.reviewBaseline()), cloudCover: 100, weatherCode: 3 };
+    }
+    if (this.overrides.humidity) {
+      const base = current ?? this.reviewBaseline();
+      current = { ...base, humidity: 99, dewPoint: base.temperature - 0.25 };
+    }
+    if (this.overrides.rain) {
+      current = {
+        ...(current ?? this.reviewBaseline()),
+        humidity: 94,
+        precipitation: 2.4,
+        rain: 2.4,
+        weatherCode: 63,
+        cloudCover: 96,
+      };
+    }
+    if (this.overrides.storm) {
+      current = {
+        ...(current ?? this.reviewBaseline()),
+        humidity: 96,
+        precipitation: 5.2,
+        rain: 5.2,
+        weatherCode: 95,
+        cloudCover: 100,
+      };
+    }
+    return current;
+  }
+
+  private reviewBaseline(): WeatherReading {
+    return {
+      temperature: 18,
+      humidity: 55,
+      dewPoint: 9,
+      precipitation: 0,
+      rain: 0,
+      snowfall: 0,
+      weatherCode: 1,
+      cloudCover: 22,
+      isDay: true,
+    };
+  }
+
+  update(dt: number, time: number, redWatch: boolean): void {
+    if (this.overrides.live && Date.now() >= this.nextRefreshAt) void this.refresh();
+    const current = this.conditions();
+    if (!current) return;
+
+    const humidity = THREE.MathUtils.smoothstep(current.humidity, 72, 98);
+    const dewSpread = Math.max(0, current.temperature - current.dewPoint);
+    const nearDewPoint = 1 - THREE.MathUtils.smoothstep(dewSpread, 1.2, 6.5);
+    const wetWeather = current.precipitation > 0.05 ? 0.56 : 0;
+    this.condensationTarget = THREE.MathUtils.clamp(
+      Math.max(wetWeather, humidity * 0.72 + nearDewPoint * 0.42),
+      0,
+      1,
+    );
+    const forcedWet = this.overrides.humidity || this.overrides.rain || this.overrides.storm;
+    const condensationRate = this.condensationTarget > this.reveal
+      ? dt / (forcedWet ? 5 : 38)
+      : dt / 110;
+    this.reveal = THREE.MathUtils.clamp(
+      this.reveal + Math.sign(this.condensationTarget - this.reveal) * condensationRate,
+      0,
+      1,
+    );
+    this.condensationMaterial.uniforms.reveal.value = this.reveal;
+    this.condensation.visible = this.reveal > 0.02;
+
+    const cloud = current.cloudCover / 100;
+    const daylightTarget = (current.isDay ? 0.34 : 0.045) * (1 - cloud * 0.56);
+    this.daylight = THREE.MathUtils.damp(this.daylight, daylightTarget, 0.8, dt);
+    this.skyLight.intensity = this.daylight * (redWatch ? 0.08 : 1);
+
+    const stormActive = current.weatherCode >= 95;
+    if (stormActive && !this.stormWasActive) {
+      this.nextLightningAt = time + (this.overrides.storm ? 1.2 : 7 + Math.random() * 22);
+    } else if (!stormActive) {
+      this.nextLightningAt = Number.POSITIVE_INFINITY;
+    }
+    this.stormWasActive = stormActive;
+
+    if (stormActive && time >= this.nextLightningAt) {
+      this.lightningStartedAt = time;
+      this.nextLightningAt = time + (this.overrides.storm ? 7 + Math.random() * 11 : 32 + Math.random() * 75);
+    }
+    const sinceFlash = time - this.lightningStartedAt;
+    const pulse = (center: number, width: number): number =>
+      Math.exp(-Math.pow((sinceFlash - center) / width, 2));
+    const flash = sinceFlash >= 0 && sinceFlash < 0.9
+      ? pulse(0.035, 0.024) + pulse(0.18, 0.045) * 0.48 + pulse(0.52, 0.08) * 0.72
+      : 0;
+    this.lightning.intensity = flash * 2_100;
+  }
+}

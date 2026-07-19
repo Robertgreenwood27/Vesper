@@ -16,7 +16,7 @@ import { loadSpiderRig } from "../spider/SpiderRigLoader";
 import { createWebNetworkTraversal } from "../traversal/index";
 import { createCobweb, DEFAULT_LEGSPAN } from "../web/createCobweb";
 import { createEnclosureLayout } from "../web/enclosureLayout";
-import { DewSystem, Firefly } from "./Atmosphere";
+import { DewSystem, Firefly, LiveWeatherAtmosphere } from "./Atmosphere";
 import {
   PreyWrappingSystem,
   type RearLegWorkPose,
@@ -558,13 +558,26 @@ const silk = new SilkRenderer(scene, web.network);
 
 const dew = new DewSystem(scene, web.network, mobileExperience ? 70 : 120);
 const firefly = new Firefly(scene);
+const weather = new LiveWeatherAtmosphere(
+  scene,
+  new THREE.Vector3(enclosure.centerX, 0, enclosure.centerZ),
+  enclosure.radius,
+  enclosure.height,
+  mobileExperience ? 150 : 280,
+  {
+    live: tuned("weather") !== 0,
+    clear: tuned("clear") === 1,
+    clouds: tuned("clouds") === 1,
+    humidity: tuned("humidity") === 1,
+    rain: tuned("rain") === 1,
+    storm: tuned("storm") === 1 || tuned("lightning") === 1,
+  },
+);
 const spiderDroppings = new SpiderDroppingSystem(scene, (worldX, worldZ) =>
   substrateHeight(worldX - enclosure.centerX, worldZ - enclosure.centerZ),
 );
 const forceDew = tuned("dew") === 1;
 const forceFirefly = tuned("firefly") === 1;
-let dewAnnounced = false;
-let nextDewCheck = 0;
 let nextFireflyAt = forceFirefly ? 6 : 120 + Math.random() * 240;
 let nextFireflyGlance = 0;
 let fireflyHeldHerGaze = false;
@@ -1680,7 +1693,7 @@ if (import.meta.env.DEV) {
         : [],
     travelTo: (nodeId: string) =>
       choreographer?.setIntent({ kind: "travel", to: { kind: "node", nodeId } }),
-    raw: () => ({ choreographer, traversal, rig: loadedRig, network: web.network, dew, firefly }),
+    raw: () => ({ choreographer, traversal, rig: loadedRig, network: web.network, dew, firefly, weather }),
     webSense: () => ({
       disturbance: Number(webDisturbance.toFixed(3)),
       respondsAfter: Number((nextTouchResponseAt - habitatTime).toFixed(1)),
@@ -2684,24 +2697,12 @@ function updateAutonomy(dt: number): void {
 }
 
 function updateAtmosphere(dt: number): void {
-  // Dew keeps its own hours. Checked lazily; condensation is not urgent.
-  if (habitatTime >= nextDewCheck) {
-    nextDewCheck = habitatTime + 20;
-    const condensed = forceDew || isDewHour();
-    dew.setCondensed(condensed);
-    if (condensed && !dewAnnounced) {
-      dewAnnounced = true;
-      announce("The night has beaded the web with dew");
-      if (!moth && (petMode === "watching" || petMode === "resting")) {
-        setPetMode(
-          "watching",
-          `${memory.name} waits while the web grows heavier, bead by bead.`,
-          "letting the dew settle",
-        );
-      }
-    }
-    if (!condensed && !forceDew) dewAnnounced = false;
-  }
+  weather.update(dt, habitatTime, redWatch);
+
+  // Live humidity takes precedence. The old dawn window remains a graceful
+  // offline fallback, and neither path announces itself in the interface.
+  const condensed = forceDew || weather.silkCondensed || (!weather.hasConditions && isDewHour());
+  dew.setCondensed(condensed);
   dew.update(dt, habitatTime);
 
   // Some nights, a visitor.
@@ -2709,7 +2710,6 @@ function updateAtmosphere(dt: number): void {
     firefly.launch();
     nextFireflyGlance = habitatTime + 3;
     fireflyHeldHerGaze = false;
-    announce("Something small and luminous is crossing the room");
   }
   if (firefly.active) {
     firefly.update(dt, habitatTime);
@@ -2721,20 +2721,13 @@ function updateAtmosphere(dt: number): void {
       choreographer?.setIntent({ kind: "attend", at: firefly.position });
       if (!fireflyHeldHerGaze) {
         fireflyHeldHerGaze = true;
-        setPetMode(
-          "watching",
-          `${memory.name} turns by fractions, keeping the ember exactly in front of her.`,
-          "tracking a firefly",
-        );
       }
     }
   } else if (fireflyHeldHerGaze) {
     fireflyHeldHerGaze = false;
     nextFireflyAt = habitatTime + (forceFirefly ? 30 : 240 + Math.random() * 420);
-    rememberAutonomousAct("Tracked a firefly across the whole room without taking a step.");
-    if (!moth && petMode === "watching") {
+    if (!moth && petMode !== "feeding" && petMode !== "stalking") {
       choreographer?.setIntent({ kind: "rest" });
-      setPetMode("resting", `${memory.name} lets the dark go back to being dark.`, "settling again");
     }
   }
 }

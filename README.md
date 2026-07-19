@@ -76,6 +76,35 @@ belonged to her.
 - **Eye shine.** Under the red observation light, her eyes catch and throw the
   light straight back — turn the lamp on her and the dark looks back.
 
+## Living weather
+
+In production, the room quietly borrows the visitor's current conditions from
+[Open-Meteo](https://open-meteo.com/). Vercel supplies coarse IP-derived
+coordinates to the server function; only those coordinates are sent to
+Open-Meteo, and the browser receives conditions without a place name or
+location. Nothing is stored.
+
+Weather is never named in the interface. High humidity slowly beads the glass
+and can settle dew on the silk, cloud cover softens the cool room light, rain
+deepens those wet-weather cues without rendering raindrops, and a thunderstorm
+occasionally throws silent light from somewhere beyond the enclosure.
+
+Review URLs:
+
+- `?humidity=1` - heavy, slow-building condensation on glass and silk
+- `?rain=1` - humid glass with cooler, cloud-muted daylight; no visible rain
+- `?storm=1` - the rain treatment plus repeating exterior lightning
+- `?lightning=1` - alias for `?storm=1`
+- `?clouds=1` - fully overcast daylight
+- `?clear=1` - clear dry daytime light
+- `?dew=1` - the original silk-only dew treatment
+- `?firefly=1` - the original nocturnal visitor
+- `?weather=0` - disable the live Open-Meteo request (forced review effects
+  can still be combined with it)
+
+Flags can be combined, for example `?weather=0&rain=1` for repeatable local
+review without a weather response.
+
 ## Architecture
 
 ```text
