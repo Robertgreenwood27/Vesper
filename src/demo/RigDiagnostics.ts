@@ -355,6 +355,11 @@ export class RigDiagnostics {
   }
 
   private updatePanel(): void {
+    const state = this.choreographer.state;
+    this.panel.dataset.intent = state.intent;
+    this.panel.dataset.restPoseSettled = String(state.restPoseSettled);
+    this.panel.dataset.raisedRestCount = String(state.raisedRestCount);
+    this.panel.dataset.poseSignature = this.poseSignature();
     for (const reading of this.readings) {
       const row = this.rows.get(reading.legId)!;
       row.summary.className = `rig-debug-summary ${reading.severity}`;
@@ -376,6 +381,37 @@ export class RigDiagnostics {
         }),
       );
     }
+  }
+
+  /** Exact-enough DEV fingerprint for proving the rendered rig truly stopped. */
+  private poseSignature(): string {
+    const values = [
+      this.rig.rootObject.position.x,
+      this.rig.rootObject.position.y,
+      this.rig.rootObject.position.z,
+      this.rig.rootObject.quaternion.x,
+      this.rig.rootObject.quaternion.y,
+      this.rig.rootObject.quaternion.z,
+      this.rig.rootObject.quaternion.w,
+      this.rig.abdomen.quaternion.x,
+      this.rig.abdomen.quaternion.y,
+      this.rig.abdomen.quaternion.z,
+      this.rig.abdomen.quaternion.w,
+    ];
+    for (const legId of SPIDER_LEG_IDS) {
+      const leg = this.rig.legs[legId];
+      for (const joint of leg.joints) {
+        values.push(
+          joint.quaternion.x,
+          joint.quaternion.y,
+          joint.quaternion.z,
+          joint.quaternion.w,
+        );
+      }
+      leg.footTip.getWorldPosition(this.worldA);
+      values.push(this.worldA.x, this.worldA.y, this.worldA.z);
+    }
+    return values.map((value) => value.toFixed(9)).join(",");
   }
 
   private requireElement<T extends Element>(selector: string): T {

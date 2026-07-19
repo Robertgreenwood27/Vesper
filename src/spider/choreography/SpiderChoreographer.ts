@@ -125,17 +125,17 @@ const CINEMATIC_GAIT: readonly (readonly SpiderLegId[])[] = [
  * a relaxed stance prevents a sharp route corner from winding six planted legs
  * around a body that has already completed the turn.
  */
-const CINEMATIC_TURN_PER_STEP = THREE.MathUtils.degToRad(14);
+const CINEMATIC_TURN_PER_STEP = THREE.MathUtils.degToRad(20);
 const CINEMATIC_TURN_DEADBAND = THREE.MathUtils.degToRad(2);
 /** Let the thorax catch the planted support frame before authorizing more yaw. */
-const CINEMATIC_MAX_BODY_SUPPORT_LAG = THREE.MathUtils.degToRad(10);
+const CINEMATIC_MAX_BODY_SUPPORT_LAG = THREE.MathUtils.degToRad(12);
 /** Normalized IK error at which anatomy outranks the ordinary pair sequence. */
 const CINEMATIC_IK_URGENCY_THRESHOLD = 0.08;
 /** Makes a visibly joint-limited pair win without starving every other pair. */
 const CINEMATIC_IK_URGENCY_WEIGHT = 5;
 
 /** Minimum route speed retained while the spider prepares a sharp corner. */
-const CINEMATIC_CORNER_SPEED_FLOOR = 0.2;
+const CINEMATIC_CORNER_SPEED_FLOOR = 0.28;
 
 /**
  * A balanced priority for unsupported resting legs.
@@ -157,6 +157,14 @@ const REST_RAISE_PRIORITY: readonly SpiderLegId[] = [
 
 /** Maximum normalized solve miss tolerated once a rest target reaches silk. */
 const REST_CONTACT_IK_RESIDUAL_LIMIT = 0.045;
+/** One initial evaluation plus one delayed recheck, then the rest pose is final. */
+const REST_CONTACT_CHECK_LIMIT = 2;
+/** Lets the web answer the first load change before the final rest snapshot. */
+const REST_CONTACT_RECHECK_DELAY = 0.12;
+/** Rest targets stop easing after this long even if tiny IK noise remains. */
+const REST_POSE_SETTLE_LIMIT = 1.25;
+/** A foot this close to its fixed rest target is visually stationary. */
+const REST_POSE_SETTLE_EPSILON = 0.0025;
 
 interface CinematicFootState {
   readonly position: THREE.Vector3;
@@ -168,6 +176,8 @@ interface CinematicFootState {
   duration: number;
   moving: boolean;
 }
+
+type StationaryPoseKind = "rest" | "freeze" | "arrival";
 
 export interface ChoreographerOptions {
   readonly rig: SpiderRig;
@@ -196,6 +206,8 @@ export interface ChoreographerState {
   readonly stranded: boolean;
   /** Unsupported feet currently held in the high resting pose. */
   readonly raisedRestCount: number;
+  /** True once rest feet have stopped evaluating and reached their fixed pose. */
+  readonly restPoseSettled: boolean;
 }
 
 /**
@@ -294,10 +306,18 @@ export class SpiderChoreographer {
   private cinematicLastGroupIndex = -1;
   /** Stable membership for one rest interval; never inferred afresh each frame. */
   private readonly raisedRestFeet = new Set<SpiderLegId>();
+  /** Fixed world targets captured after the bounded rest-contact evaluations. */
+  private readonly lockedRestTargets = new Map<SpiderLegId, THREE.Vector3>();
   /** Feet just recovered from the high pose cannot be the next ordinary lift. */
   private readonly cinematicRecoveryCooldown = new Set<SpiderLegId>();
   private restPoseClock = 0;
+  private restContactCheckClock = 0;
+  private restContactChecks = 0;
+  private restPoseSettleClock = 0;
   private restPoseActive = false;
+  private restPoseSettled = false;
+  /** Which stationary intent owns the current lock; prevents stale early-outs. */
+  private stationaryPoseKind: StationaryPoseKind | null = null;
 
   private speed = 0;
   private leash = 0;
@@ -403,10 +423,12 @@ export class SpiderChoreographer {
       hasRoute: this.route.hasRoute,
       routeRemaining: this.route.remaining,
       arrived: this.config.cinematicLocomotion
-        ? this.cinematicArrivalComplete()
+        ? (this.stationaryPoseKind === "arrival" && this.restPoseSettled)
+          || this.cinematicArrivalComplete()
         : this.route.arrived,
       stranded: this.stranded,
       raisedRestCount: this.restPoseActive ? this.raisedRestFeet.size : 0,
+      restPoseSettled: this.restPoseActive && this.restPoseSettled,
     };
   }
 
@@ -463,9 +485,15 @@ export class SpiderChoreographer {
     this.cinematicStepFramePending = false;
     this.cinematicLastGroupIndex = -1;
     this.raisedRestFeet.clear();
+    this.lockedRestTargets.clear();
     this.cinematicRecoveryCooldown.clear();
     this.restPoseClock = 0;
+    this.restContactCheckClock = 0;
+    this.restContactChecks = 0;
+    this.restPoseSettleClock = 0;
     this.restPoseActive = false;
+    this.restPoseSettled = false;
+    this.stationaryPoseKind = null;
 
     // Provisional placement so the FootHome bones land near the silk.
     const basis = new THREE.Matrix4().makeBasis(
@@ -704,9 +732,15 @@ export class SpiderChoreographer {
     this.cinematicGaitIndex = 0;
     this.cinematicStepClock = 0;
     this.raisedRestFeet.clear();
+    this.lockedRestTargets.clear();
     this.cinematicRecoveryCooldown.clear();
     this.restPoseClock = 0;
+    this.restContactCheckClock = 0;
+    this.restContactChecks = 0;
+    this.restPoseSettleClock = 0;
     this.restPoseActive = false;
+    this.restPoseSettled = false;
+    this.stationaryPoseKind = null;
   }
 
   /** Cancels any unearned turn when travel is interrupted or cannot be planned. */
@@ -722,7 +756,7 @@ export class SpiderChoreographer {
 
   /**
    * Showcase locomotion: the route owns body travel, a fixed gait owns the feet,
-   * and silk is consulted as a suggestion. Nothing in this method may stall the
+   * and every claimed contact is real silk. Nothing in this method may stall the
    * body because a foothold is missing or one planted address reached a limit.
    */
   private updateCinematicLocomotion(dt: number): void {
@@ -734,6 +768,21 @@ export class SpiderChoreographer {
     // contacts before moving the body so their transported normals and support
     // geometry can turn her onto steep silk instead of leaving dorsal as world-up.
     this.refreshContacts();
+
+    // A completed stationary pose is a true hold, not another controller
+    // chasing a moving equilibrium. Keep semantic contacts fresh so invalid
+    // silk stops accepting load, but freeze body and leg transforms until a new
+    // movement intent actually owns an unfinished route.
+    const stationaryKind = this.requestedStationaryPoseKind();
+    if (
+      this.restPoseActive &&
+      this.restPoseSettled &&
+      this.stationaryPoseKind === stationaryKind
+    ) {
+      this.loads.applyFixedStep(dt, this.bodyPosition);
+      return;
+    }
+
     const hasTravelPoint = this.updateCinematicTravelDirection();
     // Foot state advances first. A turning pair lands into the next support
     // heading before that heading is handed to the body, so the legs visibly
@@ -759,15 +808,20 @@ export class SpiderChoreographer {
     this.loads.applyFixedStep(dt, this.bodyPosition);
   }
 
+  /** Returns the stationary presentation that currently owns the rig, if any. */
+  private requestedStationaryPoseKind(): StationaryPoseKind | null {
+    if (this.intent.kind === "rest" || this.intent.kind === "freeze") {
+      return this.intent.kind;
+    }
+    return this.route.arrived ? "arrival" : null;
+  }
+
   /**
-   * Reconciles the cinematic presentation with real silk once she is at rest.
+   * Reconciles the cinematic presentation with real silk, then locks it.
    *
-   * Walking deliberately favours a clean authored gait, so its persistent foot
-   * anchors stay untouched. At rest the eye has time to inspect every foot: a
-   * valid planted foot therefore eases to its exact live contact, while a true
-   * unsupported foot may join a stable, balanced group of at most three raised
-   * legs. The raised target is rebuilt from the body frame every update, so it
-   * follows breathing and support settling rather than hanging in world space.
+   * True rest may park unsupported feet high. Freeze and completed routes keep
+   * every released foot low, but use the same bounded two-check snapshot so no
+   * visually stationary mode can chase the web indefinitely.
    */
   private updateCinematicRestPose(dt: number): void {
     let movingFeet = false;
@@ -778,22 +832,46 @@ export class SpiderChoreographer {
       }
     }
 
-    const ready =
-      this.intent.kind === "rest" &&
-      !this.route.hasRoute &&
-      this.speed <= 0.015 &&
-      !movingFeet;
+    const requestedKind = this.requestedStationaryPoseKind();
+    if (
+      this.restPoseActive &&
+      this.stationaryPoseKind !== requestedKind
+    ) {
+      // A rest-to-freeze transition is a new pose, while departure keeps the
+      // raised set intact so the ordinary gait can recover those feet.
+      this.restPoseActive = false;
+      this.restPoseSettled = false;
+      this.stationaryPoseKind = null;
+      this.lockedRestTargets.clear();
+      this.restContactCheckClock = 0;
+      this.restContactChecks = 0;
+      this.restPoseSettleClock = 0;
+      this.restPoseClock = 0;
+      if (requestedKind) this.raisedRestFeet.clear();
+    }
+
+    const ready = requestedKind !== null && !movingFeet && (
+      requestedKind === "arrival"
+        ? this.route.arrived
+        : !this.route.hasRoute && this.speed <= 0.015
+    );
 
     if (!ready) {
       this.restPoseClock = 0;
-      if (this.intent.kind !== "rest" || this.route.hasRoute) {
+      if (requestedKind === null) {
         // Travel owns the recovery in scheduleCinematicStep: raised feet get
-        // first use of the ordinary swing path. Freeze has no route, so lower
-        // the presentation pose here instead of leaving feet parked high.
+        // first use of the ordinary swing path. A failed route has no recovery
+        // path, so lower the presentation pose here instead.
         if (!this.route.hasRoute) {
           this.lowerRaisedRestFeet(dt);
         }
         this.restPoseActive = false;
+        this.stationaryPoseKind = null;
+        this.lockedRestTargets.clear();
+        this.restContactCheckClock = 0;
+        this.restContactChecks = 0;
+        this.restPoseSettleClock = 0;
+        this.restPoseSettled = false;
       }
       return;
     }
@@ -801,56 +879,136 @@ export class SpiderChoreographer {
     if (!this.restPoseActive) {
       this.restPoseClock += dt;
       if (this.restPoseClock < this.config.restPoseDelay) return;
-      this.selectRaisedRestFeet();
+      if (requestedKind === "rest") {
+        this.selectRaisedRestFeet();
+      } else {
+        this.raisedRestFeet.clear();
+        this.reconcileRestContacts(false);
+      }
+      // The selection/reconciliation above is the first full evaluation. Give
+      // the web one short response window, evaluate once more, then never let
+      // this stationary interval renegotiate its pose again.
+      this.restContactChecks = 1;
+      this.restContactCheckClock = 0;
+      this.restPoseSettleClock = 0;
+      this.restPoseSettled = false;
+      this.lockedRestTargets.clear();
       this.restPoseActive = true;
+      this.stationaryPoseKind = requestedKind;
     }
 
-    // Silk keeps moving after the pose is chosen. A foot that becomes unsafe
-    // later must not remain a loaded semantic contact while its mesh retreats to
-    // FootHome. Membership only grows (up to the same cap), so the pose stays
-    // stable even while contact honesty is reconciled continuously.
-    this.reconcileRestContacts();
+    if (this.lockedRestTargets.size === 0) {
+      this.restContactCheckClock += dt;
+      if (
+        this.restContactChecks < REST_CONTACT_CHECK_LIMIT &&
+        this.restContactCheckClock >= REST_CONTACT_RECHECK_DELAY
+      ) {
+        this.reconcileRestContacts(this.stationaryPoseKind === "rest");
+        this.restContactChecks += 1;
+        this.restContactCheckClock = 0;
+      }
+      if (this.restContactChecks < REST_CONTACT_CHECK_LIMIT) return;
+      this.captureRestTargets();
+    }
+
+    // Once every foot reaches this one fixed snapshot, do absolutely nothing to
+    // the feet until rest ends. This breaks the foot -> load -> web -> foot
+    // feedback loop that otherwise makes a quiet spider continually rebalance.
+    if (this.restPoseSettled) return;
 
     const poseAlpha = 1 - Math.exp(-dt * this.config.restPoseResponse);
     const contactAlpha = 1 - Math.exp(-dt * this.config.restContactResponse);
+    let allSettled = true;
+    this.restPoseSettleClock += dt;
+    for (const legId of SPIDER_LEG_IDS) {
+      const state = this.cinematicFeet.get(legId)!;
+      const contact = this.contacts.get(legId)!;
+      const target = this.lockedRestTargets.get(legId)!;
+      const alpha =
+        !this.raisedRestFeet.has(legId) && contact.isPlanted
+          ? contactAlpha
+          : poseAlpha;
+      state.position.lerp(target, alpha);
+      if (
+        state.position.distanceToSquared(target) >
+        REST_POSE_SETTLE_EPSILON ** 2
+      ) {
+        allSettled = false;
+      }
+    }
+
+    if (allSettled || this.restPoseSettleClock >= REST_POSE_SETTLE_LIMIT) {
+      for (const [legId, target] of this.lockedRestTargets) {
+        this.cinematicFeet.get(legId)!.position.copy(target);
+      }
+      this.restPoseSettled = true;
+    }
+  }
+
+  /** Captures the final targets once; no live silk positions are read afterward. */
+  private captureRestTargets(): void {
+    this.lockedRestTargets.clear();
     for (const legId of SPIDER_LEG_IDS) {
       const state = this.cinematicFeet.get(legId)!;
       const contact = this.contacts.get(legId)!;
       if (this.raisedRestFeet.has(legId)) {
         this.raisedRestTarget(legId, this.target);
-        state.position.lerp(this.target, poseAlpha);
       } else if (this.isRestContactUsable(legId)) {
-        state.position.lerp(
-          this.target.set(
-            contact.worldPosition.x,
-            contact.worldPosition.y,
-            contact.worldPosition.z,
-          ),
-          contactAlpha,
-        );
+        this.target.copy(contact.worldPosition);
+      } else if (state.address && contact.isPlanted) {
+        // Preserve one of the last necessary supports exactly where it already
+        // appears rather than pulling the mesh away from its semantic contact.
+        this.target.copy(state.position);
       } else {
-        if (state.address && contact.isPlanted) {
-          // The only way an unusable address survives reconciliation is when it
-          // is one of the last five valid supports. Hold the closest existing
-          // visual pose instead of actively pulling it away toward FootHome.
-          continue;
-        }
-        // More than three unsupported legs is possible on very sparse silk.
-        // The remainder stay quietly folded near FootHome instead of joining a
-        // many-legged wave that reads as a rig failure.
+        // Unsupported feet beyond the three-leg high-pose cap fold quietly at
+        // FootHome, but this target is just as fixed as every other rest target.
         this.stanceHome(legId, this.target);
-        state.position.lerp(this.target, poseAlpha);
       }
+      this.lockedRestTargets.set(legId, this.target.clone());
     }
   }
 
   private selectRaisedRestFeet(): void {
     this.raisedRestFeet.clear();
     this.reconcileRestContacts();
+
+    // Even a dense web should show the characteristic black-widow resting
+    // gesture. When every foot found silk, deliberately let go of the weakest
+    // nonessential support rather than leaving all eight feet visually flat.
+    const minimum = Math.min(
+      this.raisedRestLimit(),
+      Math.max(0, Math.floor(this.config.minimumRaisedRestFeet)),
+    );
+    const supportFloor = Math.max(5, this.config.minimumPlantedFeet);
+    while (
+      this.raisedRestFeet.size < minimum &&
+      this.validRestSupportCount() > supportFloor
+    ) {
+      let weakest: SpiderLegId | null = null;
+      let weakestScore = -Infinity;
+      for (const legId of REST_RAISE_PRIORITY) {
+        if (this.raisedRestFeet.has(legId) || !this.isRestContactUsable(legId)) {
+          continue;
+        }
+        const contact = this.contacts.get(legId)!;
+        const leg = this.rig.legs[legId];
+        this.stanceHome(legId, this.target);
+        const stanceMiss = this.target.distanceTo(contact.worldPosition);
+        const reachStrain = contact.currentReachDistance / Math.max(1e-3, leg.reach.max);
+        const score = stanceMiss + reachStrain * 0.2;
+        if (score > weakestScore) {
+          weakest = legId;
+          weakestScore = score;
+        }
+      }
+      if (!weakest) break;
+      this.releaseRestFoot(weakest);
+      this.raisedRestFeet.add(weakest);
+    }
   }
 
-  /** Releases every newly unusable address and fills open high-pose roles. */
-  private reconcileRestContacts(): void {
+  /** Releases newly unusable addresses; only true rest may fill high-pose roles. */
+  private reconcileRestContacts(allowRaisedPose = true): void {
     const limit = this.raisedRestLimit();
     for (const legId of REST_RAISE_PRIORITY) {
       if (this.raisedRestFeet.has(legId)) continue;
@@ -871,7 +1029,7 @@ export class SpiderChoreographer {
         continue;
       }
       this.releaseRestFoot(legId);
-      if (this.raisedRestFeet.size < limit) {
+      if (allowRaisedPose && this.raisedRestFeet.size < limit) {
         this.raisedRestFeet.add(legId);
       }
     }
@@ -914,33 +1072,9 @@ export class SpiderChoreographer {
   /** True only when the visible chain can actually reach its semantic contact. */
   private isRestContactUsable(legId: SpiderLegId): boolean {
     const state = this.cinematicFeet.get(legId);
-    const contact = this.contacts.get(legId)!;
     const leg = this.rig.legs[legId];
-    if (
-      !state?.address ||
-      !contact.isPlanted ||
-      !contact.contactValid ||
-      !contact.hasResolvedWorldPosition ||
-      contact.currentReachDistance > this.maximumVisualReach(legId) * 0.995 ||
-      this.midlineBreach(legId, contact.worldPosition) >
-        this.config.midlineTolerance * leg.reach.max
-    ) {
-      return false;
-    }
-
-    leg.chain[0].getWorldPosition(this.coxa);
-    this.direction
-      .set(
-        contact.worldPosition.x,
-        contact.worldPosition.y,
-        contact.worldPosition.z,
-      )
-      .sub(this.coxa);
-    if (
-      this.direction.lengthSq() <= 1e-8 ||
-      this.direction.normalize().dot(this.restDirection(legId)) <
-        Math.cos(THREE.MathUtils.degToRad(this.config.legSweepDegrees))
-    ) {
+    const contact = this.contacts.get(legId)!;
+    if (!state || !this.isCinematicContactTrackable(legId)) {
       return false;
     }
 
@@ -962,6 +1096,32 @@ export class SpiderChoreographer {
       }
     }
     return true;
+  }
+
+  /** A semantic contact is useful only while the visible leg can remain on it. */
+  private isCinematicContactTrackable(legId: SpiderLegId): boolean {
+    const state = this.cinematicFeet.get(legId);
+    const contact = this.contacts.get(legId)!;
+    const leg = this.rig.legs[legId];
+    if (
+      !state?.address ||
+      !contact.isPlanted ||
+      !contact.contactValid ||
+      !contact.hasResolvedWorldPosition ||
+      contact.currentReachDistance > this.maximumVisualReach(legId) * 0.995 ||
+      this.midlineBreach(legId, contact.worldPosition) >
+        this.config.midlineTolerance * leg.reach.max
+    ) {
+      return false;
+    }
+
+    leg.chain[0].getWorldPosition(this.coxa);
+    this.direction.copy(contact.worldPosition).sub(this.coxa);
+    return (
+      this.direction.lengthSq() > 1e-8 &&
+      this.direction.normalize().dot(this.restDirection(legId)) >=
+        Math.cos(THREE.MathUtils.degToRad(this.config.legSweepDegrees))
+    );
   }
 
   /** Builds one reachable foot target high toward the web above the spider. */
@@ -1069,7 +1229,21 @@ export class SpiderChoreographer {
 
     for (const legId of SPIDER_LEG_IDS) {
       const state = this.cinematicFeet.get(legId)!;
-      if (!state.moving) continue;
+      if (!state.moving) {
+        // Stationary modes own a bounded settle-and-lock pass. Letting walking's
+        // live silk tracker run after the route arrives recreates the exact
+        // feedback loop that pass is designed to stop.
+        if (
+          this.route.hasRoute &&
+          !this.route.arrived &&
+          this.isCinematicContactTrackable(legId)
+        ) {
+          const contact = this.contacts.get(legId)!;
+          const alpha = 1 - Math.exp(-dt * this.config.cinematicContactResponse);
+          state.position.lerp(contact.worldPosition, alpha);
+        }
+        continue;
+      }
 
       state.elapsed += dt;
       const p = THREE.MathUtils.clamp(state.elapsed / state.duration, 0, 1);
@@ -1148,7 +1322,12 @@ export class SpiderChoreographer {
     if (movingFeet === 0 && this.cinematicStepClock <= 0) {
       const turnError = this.planCinematicStepForward();
       const turning = turnError > CINEMATIC_TURN_DEADBAND;
-      if (!(travelling || worstLag > 0.24 || turning)) return;
+      // Once the cursor has arrived, silk movement may leave an exact footfall
+      // away from authored FootHome forever. Finish any outstanding turn, but
+      // never interpret that static mismatch as permission to replant again.
+      if (!(travelling || (!this.route.arrived && worstLag > 0.24) || turning)) {
+        return;
+      }
 
       // Each planted pair earns at most one turn slice. Give the thorax time to
       // consume that slice before aiming another pair farther around the corner;
@@ -1406,26 +1585,44 @@ export class SpiderChoreographer {
       legId[1] === "1" ? FRONT_OUTWARD_STEP : DEFAULT_OUTWARD_STEP,
     );
 
-    // Nearby silk attracts the performance target, but only partially. The
-    // authored stance wins if exact contact would fold a leg under the body.
-    const hit = this.traversal.findClosestPoint(target, {
-      maximumDistance: 0.72,
-      traversableOnly: true,
+    // Search several nearby strands and accept only a genuinely reachable,
+    // uncrowded point. The visible destination and semantic address are now the
+    // same point; a miss remains honestly unsupported instead of pretending a
+    // loosely attracted authored target is attached to silk.
+    leg.chain[0].getWorldPosition(this.coxa);
+    const maximum = this.maximumVisualReach(legId, 0.93);
+    this.stanceHome(legId, this.sweep, landingForward, landingUp);
+    this.sweep.sub(this.coxa).normalize();
+    this.direction.copy(this.outwardForFrame(legId, landingForward, landingUp));
+    const foothold = this.footholds.find({
+      aim: target,
+      reachOrigin: this.coxa,
+      reach: {
+        min: leg.reach.min,
+        comfortable: Math.min(leg.reach.comfortable, maximum),
+        // FootholdSearch keeps a 0.92 safety margin internally.
+        max: maximum / 0.92,
+      },
+      searchRadius: this.config.footholdSearchRadius,
+      occupied: this.claimedCinematicAddresses(legId),
+      restDirection: this.sweep,
+      sweepCos: Math.cos(THREE.MathUtils.degToRad(this.config.legSweepDegrees)),
+      bodyCentre: this.bodyPosition,
+      outward: this.direction,
+      midlineTolerance: this.config.midlineTolerance * leg.reach.max,
     });
-    if (hit) {
-      this.target.set(hit.position.x, hit.position.y, hit.position.z);
-      target.lerp(this.target, hit.distance < 0.18 ? 0.24 : 0.1);
+    if (foothold) {
+      target.copy(foothold.position);
+      return foothold.address;
     }
 
-    // Keep the target comfortably solvable. IK shapes the leg; it never gets a
-    // vote on whether the body may continue along the route.
-    leg.chain[0].getWorldPosition(this.coxa);
+    // Keep an unsupported authored target comfortably solvable. IK shapes the
+    // leg; it never gets a vote on whether the body may continue along the route.
     this.scratch.copy(target).sub(this.coxa);
-    const maximum = this.maximumVisualReach(legId, 0.93);
     if (this.scratch.length() > maximum) {
       target.copy(this.coxa).add(this.scratch.setLength(maximum));
     }
-    return hit?.address ?? null;
+    return null;
   }
 
   private beginCinematicStep(
@@ -2111,6 +2308,17 @@ export class SpiderChoreographer {
       if (address) {
         this.occupied.push(address);
       }
+    }
+    return this.occupied;
+  }
+
+  /** Cinematic swings reserve their newly planned addresses immediately. */
+  private claimedCinematicAddresses(exclude?: SpiderLegId): StrandAddress[] {
+    this.occupied.length = 0;
+    for (const legId of SPIDER_LEG_IDS) {
+      if (legId === exclude) continue;
+      const address = this.cinematicFeet.get(legId)?.address;
+      if (address) this.occupied.push(address);
     }
     return this.occupied;
   }

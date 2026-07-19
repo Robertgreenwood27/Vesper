@@ -109,6 +109,10 @@ export interface ChoreographyConfig {
   restPoseResponse: number;
   /** Faster follow rate that keeps planted resting feet on moving silk. */
   restContactResponse: number;
+  /** Follow rate that keeps planted walking feet visibly locked to moving silk. */
+  cinematicContactResponse: number;
+  /** Minimum deliberately unsupported feet shown once a stable rest begins. */
+  minimumRaisedRestFeet: number;
   /** Maximum unsupported feet that may be held high while resting. */
   maximumRaisedRestFeet: number;
   /** Planar reach of a raised foot, as a fraction of that leg's maximum reach. */
@@ -162,6 +166,8 @@ export const DEFAULT_CHOREOGRAPHY: ChoreographyConfig = {
   restPoseDelay: 0.3,
   restPoseResponse: 5.5,
   restContactResponse: 24,
+  cinematicContactResponse: 20,
+  minimumRaisedRestFeet: 1,
   maximumRaisedRestFeet: 3,
   raisedRestPlanarReach: 0.54,
   raisedRestLift: 0.42,

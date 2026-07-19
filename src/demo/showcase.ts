@@ -596,10 +596,10 @@ let choreographer: SpiderChoreographer | null = null;
 let loadedRig: Awaited<ReturnType<typeof loadSpiderRig>> | null = null;
 
 const SHOWCASE_CHOREOGRAPHY = {
-  // The habitat is theater. Routes provide direction and nearby silk suggests
-  // footfalls, but neither reach budgets nor missing contacts may stop her.
+  // The habitat is theater. Routes provide direction, while every claimed
+  // footfall is an exact reachable silk point; missing contacts may not stop her.
   cinematicLocomotion: true,
-  travelSpeed: 0.58,
+  travelSpeed: 0.64,
   speedResponse: 5.5,
   stepTriggerDistance: 0.2,
   stepUrgentDistance: 0.36,
@@ -613,7 +613,7 @@ const SHOWCASE_CHOREOGRAPHY = {
   maximumSwingingFeet: 2,
   maximumLeash: 0.72,
   bodyFollowRate: 5.4,
-  bodyTurnRate: 2.8,
+  bodyTurnRate: 3.8,
   bodyLean: 0.12,
   abdomenLag: 0.18,
   pauseChancePerSecond: 0.22,
@@ -1652,6 +1652,10 @@ async function boot(): Promise<void> {
 // addresses on real silk or they do not. This lets that be checked without a
 // camera, by stepping the same fixed-step loop the renderer drives.
 if (import.meta.env.DEV) {
+  document.documentElement.dataset.webTest = JSON.stringify({
+    retreatNodeId: web.retreatNodeId,
+    farNodeId: web.farNodeId,
+  });
   (window as unknown as Record<string, unknown>).__silklab = {
     step(count: number) {
       for (let i = 0; i < count; i += 1) {
@@ -2732,15 +2736,17 @@ function updateAtmosphere(dt: number): void {
   }
   if (firefly.active) {
     firefly.update(dt, habitatTime);
-    // She tracks it the way she tracks everything: through stillness. Only an
-    // unoccupied spider gives the ember her attention.
+    // She notices it through stillness. This is deliberately a one-shot freeze:
+    // repeatedly replanning an `attend` route to the moving ember made a spider
+    // whose HUD still said RESTING replant her feet every few seconds.
     const free = !moth && petMode !== "feeding" && petMode !== "stalking" && choreographer;
-    if (free && habitatTime >= nextFireflyGlance) {
-      nextFireflyGlance = habitatTime + 2.4;
-      choreographer?.setIntent({ kind: "attend", at: firefly.position });
-      if (!fireflyHeldHerGaze) {
-        fireflyHeldHerGaze = true;
+    if (free && !fireflyHeldHerGaze && habitatTime >= nextFireflyGlance) {
+      const intent = choreographer?.state.intent;
+      // Do not disturb an already locked rest/freeze pose merely to notice it.
+      if (intent !== "rest" && intent !== "freeze") {
+        choreographer?.setIntent({ kind: "freeze" });
       }
+      fireflyHeldHerGaze = true;
     }
   } else if (fireflyHeldHerGaze) {
     fireflyHeldHerGaze = false;
