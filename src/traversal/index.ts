@@ -1,5 +1,6 @@
 export { ContactFrameTracker, StrandTraversal, createContactFrame } from "./StrandTraversal";
 export { WebRoutePlanner } from "./RoutePlanner";
+export { DirectTerrainPlanner } from "./DirectTerrainPlanner";
 export { TemporaryStrandContact } from "./TemporaryStrandContact";
 export { createWebNetworkTraversal } from "./createWebNetworkTraversal";
 export { createVec3 } from "./vectorMath";
@@ -12,6 +13,7 @@ export type {
   ClosestPointOptions,
   ClosestPointResult,
   ContactFrame,
+  DirectTerrainRoute,
   JunctionProximity,
   MutableVec3,
   PlannedRoute,

@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import {
+  DirectTerrainPlanner,
   WebRoutePlanner,
   type PlannedRoute,
   type StrandAddress,
@@ -306,6 +307,8 @@ export interface ChoreographerState {
   /** Smoothed 0..1 measure of how well the legs are finding and holding silk. */
   readonly supportQuality: number;
   readonly hasRoute: boolean;
+  /** Body guide in use: free movement over web terrain or strict strand topology. */
+  readonly routeKind: "terrain" | "strand" | null;
   readonly routeRemaining: number;
   readonly arrived: boolean;
   /** Set when the spider wanted to move a foot and the web offered nowhere to put it. */
@@ -337,6 +340,7 @@ export class SpiderChoreographer {
   private readonly rig: SpiderRig;
   private readonly traversal: StrandTraversal;
   private readonly planner: WebRoutePlanner;
+  private readonly terrainPlanner: DirectTerrainPlanner | null;
   private readonly footholds: FootholdSearch;
   private readonly gait = new Gait();
   private readonly personality: Personality;
@@ -463,6 +467,16 @@ export class SpiderChoreographer {
     this.onFootPlant = options.onFootPlant;
     this.config = createChoreographyConfig(options.config);
     this.planner = new WebRoutePlanner(options.traversal);
+    const terrainSupportDistance = Math.min(
+      this.config.footholdSearchRadius * 0.65,
+      this.rig.aggregateReach.comfortable * 0.78,
+    );
+    this.terrainPlanner = this.config.cinematicLocomotion
+      ? new DirectTerrainPlanner(options.traversal, {
+        maximumSupportDistance: terrainSupportDistance,
+        sampleSpacing: Math.max(0.12, terrainSupportDistance * 0.5),
+      })
+      : null;
     this.footholds = new FootholdSearch(options.traversal);
     this.personality = new Personality(this.config);
 
@@ -559,6 +573,7 @@ export class SpiderChoreographer {
       leash: this.leash,
       supportQuality: this.cinematicSupportQuality,
       hasRoute: this.route.hasRoute,
+      routeKind: this.route.guideKind,
       routeRemaining: this.route.remaining,
       arrived: this.config.cinematicLocomotion
         ? (this.stationaryPoseKind === "arrival" && this.restPoseSettled)
@@ -799,6 +814,12 @@ export class SpiderChoreographer {
     if (!start) {
       this.route.clear();
       this.resetCinematicHeading();
+      return;
+    }
+    const direct = this.terrainPlanner?.plan(start, destination);
+    if (direct) {
+      this.route.setDirectTerrainRoute(direct);
+      if (!this.route.hasRoute) this.resetCinematicHeading();
       return;
     }
     const planned: PlannedRoute | null = this.planner.plan(start, destination);

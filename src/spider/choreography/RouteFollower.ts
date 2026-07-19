@@ -1,5 +1,10 @@
 import * as THREE from "three";
-import type { PlannedRoute, StrandAddress, StrandTraversal } from "../../traversal/index";
+import type {
+  DirectTerrainRoute,
+  PlannedRoute,
+  StrandAddress,
+  StrandTraversal,
+} from "../../traversal/index";
 
 interface Span {
   readonly strandId: string;
@@ -20,15 +25,23 @@ interface Span {
  */
 export class RouteFollower {
   private spans: Span[] = [];
+  private directTerrain: DirectTerrainRoute | null = null;
   private total = 0;
   private distance = 0;
   /** A valid plan whose filtered material distance is already zero. */
   private zeroDistanceArrival = false;
 
   readonly cursorAddress: { strandId: string; t: number } = { strandId: "", t: 0 };
+  private readonly directDestination = new THREE.Vector3();
 
   get hasRoute(): boolean {
-    return this.spans.length > 0;
+    return this.directTerrain !== null || this.spans.length > 0;
+  }
+
+  get guideKind(): "terrain" | "strand" | null {
+    if (this.directTerrain) return "terrain";
+    if (this.spans.length > 0) return "strand";
+    return null;
   }
 
   get routeLength(): number {
@@ -48,6 +61,7 @@ export class RouteFollower {
   }
 
   setRoute(route: PlannedRoute): void {
+    this.directTerrain = null;
     this.spans = [];
     this.total = 0;
     this.zeroDistanceArrival = false;
@@ -69,8 +83,25 @@ export class RouteFollower {
     this.zeroDistanceArrival = this.spans.length === 0;
   }
 
+  /** Follows a straight guide while the feet independently use nearby silk. */
+  setDirectTerrainRoute(route: DirectTerrainRoute): void {
+    this.spans = [];
+    this.directTerrain = {
+      ...route,
+      startPosition: { ...route.startPosition },
+      destinationAddress: route.destinationAddress
+        ? { ...route.destinationAddress }
+        : undefined,
+      destinationPosition: { ...route.destinationPosition },
+    };
+    this.total = Math.max(0, route.distance);
+    this.distance = 0;
+    this.zeroDistanceArrival = this.total <= 1e-6;
+  }
+
   clear(): void {
     this.spans = [];
+    this.directTerrain = null;
     this.total = 0;
     this.distance = 0;
     this.zeroDistanceArrival = false;
@@ -88,6 +119,13 @@ export class RouteFollower {
 
   /** The route address `lookahead` metres beyond the cursor, clamped to the end. */
   addressAt(lookahead = 0): StrandAddress | null {
+    if (this.directTerrain) {
+      const destination = this.directTerrain.destinationAddress;
+      if (!destination || !this.arrived) return null;
+      this.cursorAddress.strandId = destination.strandId;
+      this.cursorAddress.t = destination.t;
+      return this.cursorAddress;
+    }
     if (this.spans.length === 0) {
       return null;
     }
@@ -102,6 +140,35 @@ export class RouteFollower {
 
   /** Resolves a route address to a live world position. Returns false if the silk is gone. */
   positionAt(traversal: StrandTraversal, lookahead: number, out: THREE.Vector3): boolean {
+    if (this.directTerrain) {
+      const route = this.directTerrain;
+      try {
+        if (route.destinationAddress) {
+          traversal.getWorldPosition(route.destinationAddress, this.directDestination);
+        } else if (route.destinationNodeId) {
+          traversal.getNodePosition(route.destinationNodeId, this.directDestination);
+        } else {
+          this.directDestination.set(
+            route.destinationPosition.x,
+            route.destinationPosition.y,
+            route.destinationPosition.z,
+          );
+        }
+      } catch {
+        return false;
+      }
+
+      const alpha = this.total > 1e-6
+        ? THREE.MathUtils.clamp((this.distance + lookahead) / this.total, 0, 1)
+        : 1;
+      out.set(
+        route.startPosition.x + (this.directDestination.x - route.startPosition.x) * alpha,
+        route.startPosition.y + (this.directDestination.y - route.startPosition.y) * alpha,
+        route.startPosition.z + (this.directDestination.z - route.startPosition.z) * alpha,
+      );
+      return Number.isFinite(out.x) && Number.isFinite(out.y) && Number.isFinite(out.z);
+    }
+
     const address = this.addressAt(lookahead);
     if (!address) {
       return false;

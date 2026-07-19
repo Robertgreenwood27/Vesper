@@ -2999,6 +2999,17 @@ function frame(now: number): void {
     });
   }
 
+  if (import.meta.env.DEV && choreographer) {
+    if (loadedRig) loadedRig.rootObject.getWorldPosition(petWorldPosition);
+    document.documentElement.dataset.routeTest = JSON.stringify({
+      state: choreographer.state,
+      mothStage,
+      bodyPosition: loadedRig ? petWorldPosition.toArray() : null,
+      mothPosition: moth && mothAddress ? mothWorldPosition.toArray() : null,
+      mothAddress,
+    });
+  }
+
   if (import.meta.env.DEV && forcedTravelNodeIsValid() && choreographer) {
     const turnRuntime = choreographer as unknown as {
       bodyForward: THREE.Vector3;

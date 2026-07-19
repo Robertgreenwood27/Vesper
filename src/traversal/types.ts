@@ -162,6 +162,19 @@ export interface RouteTransition {
   readonly toStrandId: string;
 }
 
+/**
+ * A straight cinematic guide whose body path is independent of strand
+ * topology. The start is a world-space support point captured when planning;
+ * the destination remains semantic so a sagging web is followed live.
+ */
+export interface DirectTerrainRoute {
+  readonly startPosition: MutableVec3;
+  readonly destinationAddress?: StrandAddress;
+  readonly destinationNodeId?: string;
+  readonly destinationPosition: MutableVec3;
+  readonly distance: number;
+}
+
 export interface PlannedRoute {
   readonly start: StrandAddress;
   readonly requestedDestination: RouteDestination;
