@@ -9,11 +9,7 @@ const DEFAULT_MAX_ITERATIONS = 18;
  * within a fraction of a second while killing frame-to-frame roll snaps.
  */
 const ROLL_REST_PULL = 0.1;
-// Amplify the repaired rig's authored off-axis arch when building the preferred
-// positional seed. A value of 1 would reproduce the neutral chain exactly.
-// The slightly stronger pole lifts the femur/patella ridge toward the body-up
-// side while FABRIK still preserves every segment length and exact foot target.
-const PREFERRED_ARCH_GAIN = 1.28;
+const DEFAULT_PREFERRED_ARCH_GAIN = 1.28;
 
 export interface SpiderIKTarget {
   readonly x: number;
@@ -48,6 +44,11 @@ export interface SpiderIKChainDefinition {
   /** Ordered Coxa ... distal deform bone, FootTip. */
   readonly bones: readonly THREE.Bone[];
   readonly reach?: SpiderIKReach;
+  /**
+   * Scales the chain's rest-derived off-axis arch. A value of 1 preserves the
+   * authored rest pose when the target is at its neutral FootHome.
+   */
+  readonly preferredArchGain?: number;
   /** One entry per driven bone. FootTip itself is not driven. */
   readonly jointLimits?: readonly (SpiderIKJointLimit | undefined)[];
 }
@@ -108,6 +109,7 @@ interface RuntimeChain {
   readonly poleOffsetInRootParent: THREE.Vector3;
   readonly preferredPoleWorld: THREE.Vector3;
   readonly reach?: SpiderIKReach;
+  readonly preferredArchGain: number;
   readonly result: SpiderIKSolveResult;
   valid: boolean;
   invalidReason: string;
@@ -410,6 +412,12 @@ export class SpiderIKSolver {
       poleOffsetInRootParent: new THREE.Vector3(),
       preferredPoleWorld: new THREE.Vector3(),
       reach: normalizeReach(definition.reach),
+      preferredArchGain: clampFinite(
+        definition.preferredArchGain,
+        DEFAULT_PREFERRED_ARCH_GAIN,
+        0.72,
+        1.38,
+      ),
       result,
       valid: true,
       invalidReason: '',
@@ -651,8 +659,8 @@ export class SpiderIKSolver {
       ? clampFinite(targetDistance / restEndLength, 1, 0.2, 1.4)
       : 1;
     const perpendicularScale = clampFinite(
-      (0.72 + longitudinalScale * 0.28) * PREFERRED_ARCH_GAIN,
-      PREFERRED_ARCH_GAIN,
+      (0.72 + longitudinalScale * 0.28) * chain.preferredArchGain,
+      chain.preferredArchGain,
       0.72,
       1.38,
     );

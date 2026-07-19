@@ -7,7 +7,13 @@
  *
  * The one rule it keeps: fake decisions, never fake contact.
  */
-export { SpiderChoreographer } from "./SpiderChoreographer";
+export {
+  effectiveBendMaximumDegrees,
+  L1_PATELLA_MAX_EXTENSION_DEGREES,
+  PAIR_II_METATARSUS_MAX_EXTENSION_DEGREES,
+  PAIR_III_METATARSUS_MAX_EXTENSION_DEGREES,
+  SpiderChoreographer,
+} from "./SpiderChoreographer";
 export type { ChoreographerOptions, ChoreographerState } from "./SpiderChoreographer";
 export {
   DEFAULT_CHOREOGRAPHY,

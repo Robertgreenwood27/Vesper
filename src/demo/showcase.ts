@@ -502,6 +502,19 @@ const tuned = (key: string): number | undefined => {
 const feedingTimeScale = THREE.MathUtils.clamp(tuned("feedingScale") ?? 1, 0.05, 4);
 const forceCachedMeal = tuned("cacheMeal") === 1;
 const rigDebugEnabled = tuning.get("rigDebug") === "1";
+/** Deterministic development route used for locomotion and junction-turn QA. */
+const forcedTravelNode = import.meta.env.DEV ? tuning.get("travelTo") : null;
+let forcedTravelAttempted = false;
+const forcedTravelNodeIsValid = (): boolean => Boolean(
+  forcedTravelNode && web.network.nodes.has(forcedTravelNode),
+);
+const forcedTravelRunOwnsAutonomy = (): boolean => {
+  if (!forcedTravelNodeIsValid()) return false;
+  if (!forcedTravelAttempted) return true;
+  if (!choreographer) return false;
+  const state = choreographer.state;
+  return state.hasRoute || state.arrived;
+};
 // The leg gym freezes the body and drives scripted foot trajectories, so the
 // solver can be stressed and measured without momentum or silk in the picture.
 const legGymEnabled = tuning.get("legGym") === "1";
@@ -592,8 +605,8 @@ const SHOWCASE_CHOREOGRAPHY = {
   abdomenLag: 0.18,
   pauseChancePerSecond: 0.22,
   bodyWeight: 0.95,
-  // Hinge realism for the leg joints past the coxa; the coxa itself stays a
-  // free ball-and-socket. See ChoreographyConfig.jointLimitScale.
+  // Repaired-rest joint limits, including the coxa's broader anatomical sector.
+  // See ChoreographyConfig.jointLimitScale.
   jointLimitScale: 1.15,
 } as const;
 
@@ -1589,6 +1602,17 @@ async function boot(): Promise<void> {
     awayMemory || `${memory.name} hangs motionless, reading the room through the silk.`,
     awayMemory ? "remembering the hours alone" : "reading the room",
   );
+  if (forcedTravelNode && forcedTravelNodeIsValid()) {
+    choreographer.setIntent({
+      kind: "travel",
+      to: { kind: "node", nodeId: forcedTravelNode },
+    });
+    setPetMode(
+      "wandering",
+      `${memory.name} follows a deterministic locomotion test route.`,
+      `testing the turn into ${forcedTravelNode}`,
+    );
+  }
 
   // After a real absence she may, once settled, briefly face a stretch of
   // silk she has history with — then get on with her day. Long cooldown, no
@@ -2505,6 +2529,7 @@ function travelToRememberedSpot(spot: { strandId: string; t: number }, urgency: 
 function updateAutonomy(dt: number): void {
   if (!choreographer) return;
   memory.hunger = Math.min(100, memory.hunger + dt * 0.004);
+  if (forcedTravelRunOwnsAutonomy()) return;
   if (moth) return;
 
   const state = choreographer.state;
@@ -2781,7 +2806,10 @@ function frame(now: number): void {
   while (accumulator >= FIXED_TIME_STEP && steps < MAX_SUBSTEPS) {
     solver.step(FIXED_TIME_STEP);
     if (legGym) legGym.update(FIXED_TIME_STEP);
-    else choreographer?.update(FIXED_TIME_STEP);
+    else if (choreographer) {
+      choreographer.update(FIXED_TIME_STEP);
+      if (forcedTravelNodeIsValid()) forcedTravelAttempted = true;
+    }
     accumulator -= FIXED_TIME_STEP;
     steps += 1;
   }
@@ -2810,6 +2838,37 @@ function frame(now: number): void {
   if (hudTimer <= 0) {
     updateHud();
     hudTimer = 0.2;
+  }
+
+  if (import.meta.env.DEV && forcedTravelNodeIsValid() && choreographer) {
+    const turnRuntime = choreographer as unknown as {
+      bodyForward: THREE.Vector3;
+      bodyUp: THREE.Vector3;
+      desiredForward: THREE.Vector3;
+      cinematicSupportForward: THREE.Vector3;
+      cinematicFeet: Map<string, { position: THREE.Vector3; moving: boolean }>;
+    };
+    const state = choreographer.state;
+    document.documentElement.dataset.turnTest = JSON.stringify({
+      status: !forcedTravelAttempted
+        ? "pending"
+        : state.arrived
+          ? "complete"
+          : state.hasRoute
+            ? "active"
+            : "failed",
+      state,
+      bodyPosition: loadedRig?.rootObject.position.toArray() ?? null,
+      bodyForward: turnRuntime.bodyForward.toArray(),
+      bodyUp: turnRuntime.bodyUp.toArray(),
+      desiredForward: turnRuntime.desiredForward.toArray(),
+      supportForward: turnRuntime.cinematicSupportForward.toArray(),
+      feet: [...turnRuntime.cinematicFeet].map(([legId, foot]) => ({
+        legId,
+        moving: foot.moving,
+        position: foot.position.toArray(),
+      })),
+    });
   }
 
   resize();

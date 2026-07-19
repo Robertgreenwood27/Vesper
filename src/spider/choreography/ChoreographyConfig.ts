@@ -55,19 +55,19 @@ export interface ChoreographyConfig {
    */
   midlineTolerance: number;
   /**
-   * Multiplier on the authored *flex/extend* range of the hinge joints past the
-   * coxa. 0 disables joint-limit enforcement entirely.
+   * Multiplier on every authored joint range. 0 disables joint-limit
+   * enforcement entirely.
    *
-   * The scheme: the coxa is treated as a free ball-and-socket (no limits — it
-   * is the joint that legitimately needs the whole hemisphere and it absorbs
-   * whatever the hinges refuse), while every joint past it is a hinge whose
-   * bend range is the spec's, widened by this factor, and whose sideways swing
-   * and twist keep the spec's tight authored ranges.
+   * With the repaired rest pose, every joint is constrained relative to its
+   * authored local frame. The coxa keeps its broader multi-axis range, while the
+   * distal joints use the spec's hinge-like bend, swing, and twist ranges. This
+   * prevents the root of a leg from rotating into a different anatomical sector
+   * merely because the remaining hinges can still reach the target.
    *
    * Historical note: enforcing the spec's limits on *every* joint used to
    * detach feet from silk by ~0.19 model units on average, because the clamp
    * ran after FABRIK with no correction pass. The solver now re-solves from
-   * the clamped pose, letting the free coxa make up the difference, so hinge
+   * the clamped pose and distributes the correction across the legal chain, so
    * enforcement no longer costs contact.
    */
   jointLimitScale: number;

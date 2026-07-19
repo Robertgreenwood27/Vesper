@@ -1,9 +1,12 @@
 import * as THREE from "three";
-import type { SpiderChoreographer } from "../spider/choreography/index";
+import {
+  effectiveBendMaximumDegrees,
+  type SpiderChoreographer,
+} from "../spider/choreography/index";
 import type { SpiderRig } from "../spider/SpiderRig";
 import { SPIDER_LEG_IDS, type SpiderLegId } from "../spider/SpiderRigSpec";
 
-type Severity = "ok" | "warning" | "limit" | "free";
+type Severity = "ok" | "warning" | "limit";
 
 interface JointReading {
   readonly name: string;
@@ -26,6 +29,7 @@ export interface LegDiagnosticReading {
   readonly bendFlips: number;
   readonly restBendFlips: number;
   readonly turnAngles: readonly number[];
+  readonly restTurnAngles: readonly number[];
   readonly status: string;
   readonly severity: Severity;
   readonly joints: readonly JointReading[];
@@ -52,7 +56,6 @@ const COLORS: Record<Severity, THREE.Color> = {
   ok: new THREE.Color(0x54e18c),
   warning: new THREE.Color(0xffc857),
   limit: new THREE.Color(0xff4055),
-  free: new THREE.Color(0x68b9ff),
 };
 
 const DEG = 180 / Math.PI;
@@ -189,7 +192,7 @@ export class RigDiagnostics {
       </div>
       <p class="rig-debug-help">bend° from rest · line = solved bone · dash = foot error</p>
       <div class="rig-debug-legs" data-rig-legs></div>
-      <footer><i class="ok"></i>safe <i class="warning"></i>near limit <i class="limit"></i>outside <i class="free"></i>free coxa</footer>
+      <footer><i class="ok"></i>safe <i class="warning"></i>near limit <i class="limit"></i>outside</footer>
     `;
     host.append(this.panel);
 
@@ -260,18 +263,21 @@ export class RigDiagnostics {
       const swing = this.euler.z * DEG;
       const limit = leg.jointLimits[jointIndex];
       const scale = Math.max(0.01, this.choreographer.config.jointLimitScale || 1);
+      const bendMax = effectiveBendMaximumDegrees(
+        legId,
+        leg.segmentNames[jointIndex],
+        limit.bend_x[1] * scale,
+      );
       const limits = {
-        bend: [limit.bend_x[0] * scale, limit.bend_x[1] * scale] as const,
+        bend: [limit.bend_x[0] * scale, bendMax] as const,
         twist: [limit.twist_y[0] * scale, limit.twist_y[1] * scale] as const,
         swing: [limit.swing_z[0] * scale, limit.swing_z[1] * scale] as const,
       };
-      const severity = jointIndex === 0
-        ? "free"
-        : worstSeverity(
-            rangeSeverity(bend, limits.bend),
-            rangeSeverity(twist, limits.twist),
-            rangeSeverity(swing, limits.swing),
-          );
+      const severity = worstSeverity(
+        rangeSeverity(bend, limits.bend),
+        rangeSeverity(twist, limits.twist),
+        rangeSeverity(swing, limits.swing),
+      );
       return {
         name: leg.segmentNames[jointIndex],
         bend,
@@ -292,7 +298,7 @@ export class RigDiagnostics {
       reachSeverity,
       bendSeverity,
       stairSeverity,
-      ...joints.map((joint) => joint.severity === "free" ? "ok" : joint.severity),
+      ...joints.map((joint) => joint.severity),
     );
     return {
       legId,
@@ -302,6 +308,7 @@ export class RigDiagnostics {
       bendFlips: turnShape.flips,
       restBendFlips: restTurnShape.flips,
       turnAngles: turnShape.angles,
+      restTurnAngles: restTurnShape.angles,
       status: solve?.status ?? "not-solved",
       severity,
       joints,
@@ -353,7 +360,9 @@ export class RigDiagnostics {
       row.summary.className = `rig-debug-summary ${reading.severity}`;
       row.summary.textContent =
         `reach ${(reading.reachRatio * 100).toFixed(0)}% · err ${formatResidual(reading.residual)} · flips ${reading.bendFlips}/${reading.restBendFlips}`;
-      row.summary.title = `world turn angles: ${reading.turnAngles.map((angle) => `${angle.toFixed(0)}°`).join(" · ")}`;
+      row.summary.title =
+        `world turn angles: ${reading.turnAngles.map((angle) => `${angle.toFixed(0)}°`).join(" · ")}; `
+        + `rest: ${reading.restTurnAngles.map((angle) => `${angle.toFixed(0)}°`).join(" · ")}`;
       row.joints.replaceChildren(
         ...reading.joints.map((joint) => {
           const item = document.createElement("span");
@@ -436,7 +445,6 @@ function measureTurnShape(points: readonly THREE.Vector3[]): { flips: number; an
 function worstSeverity(...values: Severity[]): Severity {
   if (values.includes("limit")) return "limit";
   if (values.includes("warning")) return "warning";
-  if (values.includes("free")) return "free";
   return "ok";
 }
 

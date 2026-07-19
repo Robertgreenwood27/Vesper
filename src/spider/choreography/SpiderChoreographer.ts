@@ -12,7 +12,11 @@ import { createBlackWidowFootContacts, type SpiderFootContact } from "../SpiderF
 import { SpiderIKSolver } from "../SpiderIKSolver";
 import { SpiderLoadDistributor } from "../SpiderLoadDistributor";
 import type { SpiderRig } from "../SpiderRig";
-import { SPIDER_LEG_IDS, type SpiderLegId } from "../SpiderRigSpec";
+import {
+  SPIDER_LEG_IDS,
+  type SpiderLegId,
+  type SpiderLegSegmentName,
+} from "../SpiderRigSpec";
 import {
   createChoreographyConfig,
   type ChoreographyConfig,
@@ -45,6 +49,33 @@ const FRONT_STANCE_REACH = 0.81;
 const FRONT_WORKING_REACH = 0.86;
 const FRONT_OUTWARD_STEP = 0.015;
 const DEFAULT_OUTWARD_STEP = 0.055;
+
+/** Pair II rests only about 13 degrees from a straight distal hinge. */
+export const PAIR_II_METATARSUS_MAX_EXTENSION_DEGREES = 5;
+/** Pair III has a broader authored bend and can safely retain more extension. */
+export const PAIR_III_METATARSUS_MAX_EXTENSION_DEGREES = 15;
+/** L1's Patella crosses straight near +29.5 degrees in its corrected rest frame. */
+export const L1_PATELLA_MAX_EXTENSION_DEGREES = 15;
+
+/** Returns the scaled rig limit with the corrected rig's local safety caps. */
+export function effectiveBendMaximumDegrees(
+  legId: SpiderLegId,
+  segmentName: SpiderLegSegmentName,
+  scaledMaximum: number,
+): number {
+  if (segmentName === "Metatarsus") {
+    if (legId[1] === "2") {
+      return Math.min(scaledMaximum, PAIR_II_METATARSUS_MAX_EXTENSION_DEGREES);
+    }
+    if (legId[1] === "3") {
+      return Math.min(scaledMaximum, PAIR_III_METATARSUS_MAX_EXTENSION_DEGREES);
+    }
+  }
+  if (legId === "L1" && segmentName === "Patella") {
+    return Math.min(scaledMaximum, L1_PATELLA_MAX_EXTENSION_DEGREES);
+  }
+  return scaledMaximum;
+}
 
 /**
  * Plan-view leg sectors measured away from forward toward each leg's own side.
@@ -86,10 +117,31 @@ const CINEMATIC_GAIT: readonly (readonly SpiderLegId[])[] = [
   ["R2", "L4"],
 ];
 
+/**
+ * Maximum heading change that one planted cinematic pair may authorize.
+ *
+ * The feet advance this hidden support frame first; the thorax only follows it
+ * after that pair has landed. Keeping the increment below the angular spread of
+ * a relaxed stance prevents a sharp route corner from winding six planted legs
+ * around a body that has already completed the turn.
+ */
+const CINEMATIC_TURN_PER_STEP = THREE.MathUtils.degToRad(14);
+const CINEMATIC_TURN_DEADBAND = THREE.MathUtils.degToRad(2);
+/** Let the thorax catch the planted support frame before authorizing more yaw. */
+const CINEMATIC_MAX_BODY_SUPPORT_LAG = THREE.MathUtils.degToRad(10);
+/** Normalized IK error at which anatomy outranks the ordinary pair sequence. */
+const CINEMATIC_IK_URGENCY_THRESHOLD = 0.08;
+/** Makes a visibly joint-limited pair win without starving every other pair. */
+const CINEMATIC_IK_URGENCY_WEIGHT = 5;
+
+/** Minimum route speed retained while the spider prepares a sharp corner. */
+const CINEMATIC_CORNER_SPEED_FLOOR = 0.2;
+
 interface CinematicFootState {
   readonly position: THREE.Vector3;
   readonly start: THREE.Vector3;
   readonly destination: THREE.Vector3;
+  readonly up: THREE.Vector3;
   address: StrandAddress | null;
   elapsed: number;
   duration: number;
@@ -173,6 +225,8 @@ export class SpiderChoreographer {
   private readonly contactDir = new THREE.Vector3();
   private readonly bodyRight = new THREE.Vector3();
   private readonly desiredForward = new THREE.Vector3(1, 0, 0);
+  /** Orthonormalized scratch direction used to build the desired body frame. */
+  private readonly frameForward = new THREE.Vector3(1, 0, 0);
   private readonly desiredUp = new THREE.Vector3(0, 1, 0);
   private readonly desiredRight = new THREE.Vector3(0, 0, 1);
   private readonly currentFrameMatrix = new THREE.Matrix4();
@@ -206,6 +260,15 @@ export class SpiderChoreographer {
   private readonly cinematicFeet = new Map<SpiderLegId, CinematicFootState>();
   private cinematicGaitIndex = 0;
   private cinematicStepClock = 0;
+  /** Heading already earned by landed feet; the body is not allowed ahead of it. */
+  private readonly cinematicSupportForward = new THREE.Vector3(1, 0, 0);
+  /** Heading targeted by the pair currently in flight. */
+  private readonly cinematicStepForward = new THREE.Vector3(1, 0, 0);
+  /** Sign-stable support normal used by every part of the next landing plan. */
+  private readonly cinematicPlanningUp = new THREE.Vector3(0, 1, 0);
+  private cinematicStepFramePending = false;
+  /** A landed pair must support at least one other lift before it can repeat. */
+  private cinematicLastGroupIndex = -1;
 
   private speed = 0;
   private leash = 0;
@@ -241,6 +304,9 @@ export class SpiderChoreographer {
       SPIDER_LEG_IDS.map((id) => ({
         id,
         bones: this.rig.legs[id].chain,
+        // The middle pairs are nearly straight at rest, so preserve their
+        // authored arch instead of amplifying it before FABRIK solves.
+        preferredArchGain: id[1] === "2" || id[1] === "3" ? 1 : undefined,
         reach: {
           minimum: this.rig.legs[id].reach.min,
           comfortable: this.rig.legs[id].reach.comfortable,
@@ -248,12 +314,22 @@ export class SpiderChoreographer {
         },
         jointLimits:
           scale > 0
-            ? this.rig.legs[id].jointLimits.map((limit) => ({
-                bendX: { min: limit.bend_x[0] * scale, max: limit.bend_x[1] * scale },
-                swingZ: { min: limit.swing_z[0] * scale, max: limit.swing_z[1] * scale },
-                twistY: { min: limit.twist_y[0] * scale, max: limit.twist_y[1] * scale },
-                unit: "degrees" as const,
-              }))
+            ? this.rig.legs[id].jointLimits.map((limit, jointIndex) => {
+                const segmentName = this.rig.legs[id].segmentNames[jointIndex];
+                return {
+                  bendX: {
+                    min: limit.bend_x[0] * scale,
+                    max: effectiveBendMaximumDegrees(
+                      id,
+                      segmentName,
+                      limit.bend_x[1] * scale,
+                    ),
+                  },
+                  swingZ: { min: limit.swing_z[0] * scale, max: limit.swing_z[1] * scale },
+                  twistY: { min: limit.twist_y[0] * scale, max: limit.twist_y[1] * scale },
+                  unit: "degrees" as const,
+                };
+              })
             : undefined,
       })),
       { bendBias: 1, maxIterations: 12, enforceJointLimits: scale > 0 },
@@ -281,17 +357,25 @@ export class SpiderChoreographer {
 
   get state(): ChoreographerState {
     const planted = this.plantedCount();
+    let cinematicSwinging = 0;
+    if (this.config.cinematicLocomotion) {
+      for (const foot of this.cinematicFeet.values()) {
+        if (foot.moving) cinematicSwinging += 1;
+      }
+    }
     return {
       intent: this.intent.kind,
       plantedCount: planted,
-      swingingCount: this.swings.size,
+      swingingCount: this.config.cinematicLocomotion ? cinematicSwinging : this.swings.size,
       speed: this.speed,
       confidence: this.personality.confidence,
       paused: this.personality.isPaused,
       leash: this.leash,
       hasRoute: this.route.hasRoute,
       routeRemaining: this.route.remaining,
-      arrived: this.route.arrived,
+      arrived: this.config.cinematicLocomotion
+        ? this.cinematicArrivalComplete()
+        : this.route.arrived,
       stranded: this.stranded,
     };
   }
@@ -337,6 +421,12 @@ export class SpiderChoreographer {
     this.bodyForward.copy(forward).normalize();
     this.bodyUp.copy(up).normalize();
     this.desiredForward.copy(this.bodyForward);
+    this.frameForward.copy(this.bodyForward);
+    this.cinematicSupportForward.copy(this.bodyForward);
+    this.cinematicStepForward.copy(this.bodyForward);
+    this.cinematicPlanningUp.copy(this.bodyUp);
+    this.cinematicStepFramePending = false;
+    this.cinematicLastGroupIndex = -1;
 
     // Provisional placement so the FootHome bones land near the silk.
     const basis = new THREE.Matrix4().makeBasis(
@@ -469,18 +559,22 @@ export class SpiderChoreographer {
     const destination = destinationOf(this.intent);
     if (!destination) {
       this.route.clear();
+      this.resetCinematicHeading();
       return;
     }
     const start = this.bodyAddress;
     if (!start) {
       this.route.clear();
+      this.resetCinematicHeading();
       return;
     }
     const planned: PlannedRoute | null = this.planner.plan(start, destination);
     if (planned) {
       this.route.setRoute(planned);
+      if (!this.route.hasRoute) this.resetCinematicHeading();
     } else {
       this.route.clear();
+      this.resetCinematicHeading();
     }
   }
 
@@ -498,7 +592,8 @@ export class SpiderChoreographer {
     // How far intention has run ahead of the actual body, along travel only.
     // Straight-line distance would include the sideways offset of a body
     // straddling neighbouring strands, which is just standing posture.
-    if (this.route.positionAt(this.traversal, 0, this.travelPoint)) {
+    const hasTravelPoint = this.route.positionAt(this.traversal, 0, this.travelPoint);
+    if (hasTravelPoint) {
       this.scratch.copy(this.travelPoint).sub(this.bodyPosition);
       this.leash = Math.max(0, this.scratch.dot(this.desiredForward));
     }
@@ -510,9 +605,33 @@ export class SpiderChoreographer {
     // up to, the leash falls, and travel resumes on its own. The one state that
     // holds is a body the legs physically cannot carry further — which is a
     // spider that has genuinely run out of web, and should stop.
-    const brake = this.config.cinematicLocomotion
-      ? 1
-      : THREE.MathUtils.clamp(1 - this.leash / this.config.maximumLeash, 0, 1);
+    let brake: number;
+    if (this.config.cinematicLocomotion) {
+      // A body that races through a route corner while the feet are still
+      // changing stance reads as a skid even if every individual pose is legal.
+      // Keep enough motion to avoid a dead stop, but let heading alignment own
+      // most of the speed until the support frame has come around.
+      let alignment = 1;
+      if (hasTravelPoint && this.route.positionAt(this.traversal, 0.28, this.aheadPoint)) {
+        this.direction.copy(this.aheadPoint).sub(this.travelPoint);
+        this.direction.addScaledVector(this.bodyUp, -this.direction.dot(this.bodyUp));
+        if (this.direction.lengthSq() > 1e-8) {
+          this.direction.normalize();
+          this.sweep
+            .copy(this.bodyForward)
+            .addScaledVector(this.bodyUp, -this.bodyForward.dot(this.bodyUp))
+            .normalize();
+          alignment = THREE.MathUtils.clamp(this.direction.dot(this.sweep), 0, 1);
+        }
+      }
+      brake = THREE.MathUtils.lerp(
+        CINEMATIC_CORNER_SPEED_FLOOR,
+        1,
+        alignment * alignment,
+      );
+    } else {
+      brake = THREE.MathUtils.clamp(1 - this.leash / this.config.maximumLeash, 0, 1);
+    }
     this.route.advance(this.speed * dt * brake);
   }
 
@@ -521,6 +640,11 @@ export class SpiderChoreographer {
   private initializeCinematicFeet(): void {
     this.cinematicFeet.clear();
     this.rig.rootObject.updateMatrixWorld(true);
+    this.cinematicSupportForward.copy(this.bodyForward);
+    this.cinematicStepForward.copy(this.bodyForward);
+    this.cinematicPlanningUp.copy(this.bodyUp);
+    this.cinematicStepFramePending = false;
+    this.cinematicLastGroupIndex = -1;
     for (const legId of SPIDER_LEG_IDS) {
       // Start from the symmetric authored performance stance. Seeding from the
       // last semantic silk contact made the first visible pose inherit arbitrary
@@ -531,6 +655,7 @@ export class SpiderChoreographer {
         position,
         start: position.clone(),
         destination: position.clone(),
+        up: this.bodyUp.clone(),
         address: this.contacts.get(legId)?.address ?? null,
         elapsed: 0,
         duration: 0.2,
@@ -539,6 +664,16 @@ export class SpiderChoreographer {
     }
     this.cinematicGaitIndex = 0;
     this.cinematicStepClock = 0;
+  }
+
+  /** Cancels any unearned turn when travel is interrupted or cannot be planned. */
+  private resetCinematicHeading(): void {
+    if (!this.config.cinematicLocomotion) return;
+    this.desiredForward.copy(this.bodyForward);
+    this.cinematicSupportForward.copy(this.bodyForward);
+    this.cinematicStepForward.copy(this.bodyForward);
+    this.cinematicStepFramePending = false;
+    this.cinematicLastGroupIndex = -1;
   }
 
   /**
@@ -555,28 +690,62 @@ export class SpiderChoreographer {
     // contacts before moving the body so their transported normals and support
     // geometry can turn her onto steep silk instead of leaving dorsal as world-up.
     this.refreshContacts();
-    this.updateSupportFrame();
-    this.updateCinematicBody(dt);
-    // The body has moved since the first refresh. Resolve reach and strand frames
-    // again before choosing the next cinematic step and distributing its load.
+    const hasTravelPoint = this.updateCinematicTravelDirection();
+    // Foot state advances first. A turning pair lands into the next support
+    // heading before that heading is handed to the body, so the legs visibly
+    // initiate and brace the corner instead of spiralling after it.
+    const movingFeet = this.advanceCinematicFeet(dt);
+    // Rebuild from the pair that just landed before planning the next lift. The
+    // landing frame, support normal, and heading authorization now describe the
+    // same physical set of feet.
     this.refreshContacts();
-    this.updateCinematicFeet(dt);
+    this.updateSupportFrame();
+    this.updateCinematicPlanningUp();
+    this.scheduleCinematicStep(movingFeet);
+    // Scheduling may have released the next pair. The body must turn on the
+    // support set that is actually still planted this frame.
+    this.refreshContacts();
+    this.updateSupportFrame();
+    this.updateCinematicBody(dt, hasTravelPoint);
+    // The body has moved since the first refresh. Resolve reach and strand frames
+    // again before solving the visual legs and distributing their semantic load.
+    this.refreshContacts();
+    this.solveCinematicFeet();
     this.loads.applyFixedStep(dt, this.bodyPosition);
-    this.stranded = false;
   }
 
-  private updateCinematicBody(dt: number): void {
+  /** Resolves the route cursor and its longer lookahead into a landing heading. */
+  private updateCinematicTravelDirection(): boolean {
+    if (!this.route.hasRoute) return false;
+    const hasTravelPoint = this.route.positionAt(this.traversal, 0, this.travelPoint);
+    if (!hasTravelPoint) {
+      // The current silk address vanished. This is a broken route, not an
+      // arrival; release autonomy and preserve an explicit stranded signal.
+      this.route.clear();
+      this.resetCinematicHeading();
+      this.stranded = true;
+      return false;
+    }
+    this.stranded = false;
+    if (
+      this.route.positionAt(this.traversal, 0.28, this.aheadPoint)
+    ) {
+      this.scratch.copy(this.aheadPoint).sub(this.travelPoint);
+      if (this.scratch.lengthSq() > 1e-7) {
+        this.desiredForward.copy(this.scratch).normalize();
+      }
+    }
+    return hasTravelPoint;
+  }
+
+  private updateCinematicBody(dt: number, hasTravelPoint: boolean): void {
     const frame = this.bodyPose.frame;
     if (!frame.valid) return;
 
-    const hasTravelPoint =
-      this.route.hasRoute && this.route.positionAt(this.traversal, 0, this.travelPoint);
-    if (this.route.hasRoute && this.route.positionAt(this.traversal, 0.28, this.aheadPoint)) {
-      this.scratch.copy(this.aheadPoint).sub(this.travelPoint);
-      if (this.scratch.lengthSq() > 1e-7) this.desiredForward.copy(this.scratch);
-    }
-
-    this.alignBodyFrame(frame.up, dt);
+    // Follow only the heading that landed feet have earned. The route can look
+    // arbitrarily far around a bend; it informs the next footfall, not an
+    // unsupported instantaneous thorax turn.
+    this.alignBodyFrame(frame.up, dt, this.cinematicSupportForward);
 
     if (hasTravelPoint) {
       this.target.copy(this.travelPoint).addScaledVector(this.bodyUp, this.config.bodyStandoff);
@@ -600,50 +769,257 @@ export class SpiderChoreographer {
     this.rig.rootObject.updateMatrixWorld(true);
   }
 
-  private updateCinematicFeet(dt: number): void {
+  private advanceCinematicFeet(dt: number): number {
     this.cinematicStepClock = Math.max(0, this.cinematicStepClock - dt);
-    const travelling = this.speed > 0.035 && this.route.hasRoute && !this.route.arrived;
     let movingFeet = 0;
-    let worstLag = 0;
 
     for (const legId of SPIDER_LEG_IDS) {
       const state = this.cinematicFeet.get(legId)!;
-      if (state.moving) movingFeet += 1;
+      if (!state.moving) continue;
+
+      state.elapsed += dt;
+      const p = THREE.MathUtils.clamp(state.elapsed / state.duration, 0, 1);
+      const eased = p * p * (3 - 2 * p);
+      state.position.copy(state.start).lerp(state.destination, eased);
+      state.position.addScaledVector(state.up, Math.sin(Math.PI * p) * 0.075);
+      if (p >= 1) {
+        state.position.copy(state.destination);
+        state.moving = false;
+        if (state.address) {
+          this.contacts.get(legId)!.plant(state.address);
+          this.onFootPlant?.(legId, state.address);
+        }
+      } else {
+        movingFeet += 1;
+      }
+    }
+
+    // A turning pair lands before its heading is handed to the thorax. While
+    // the feet were airborne, the previous support frame kept the body braced.
+    if (movingFeet === 0 && this.cinematicStepFramePending) {
+      this.cinematicSupportForward.copy(this.cinematicStepForward).normalize();
+      this.cinematicStepFramePending = false;
+    }
+
+    return movingFeet;
+  }
+
+  private scheduleCinematicStep(movingFeet: number): void {
+    // Rest/freeze clears the route. Do not let stale lag or a stale lookahead
+    // start another lift after the caller has asked the spider to hold still.
+    if (!this.route.hasRoute) return;
+
+    const travelling = this.speed > 0.035 && this.route.hasRoute && !this.route.arrived;
+
+    let worstLag = 0;
+    for (const legId of SPIDER_LEG_IDS) {
+      const state = this.cinematicFeet.get(legId)!;
       this.stanceHome(legId, this.aim);
       worstLag = Math.max(worstLag, state.position.distanceTo(this.aim));
     }
 
-    if (movingFeet === 0 && this.cinematicStepClock <= 0 && (travelling || worstLag > 0.24)) {
-      const group = CINEMATIC_GAIT[this.cinematicGaitIndex % CINEMATIC_GAIT.length];
-      this.cinematicGaitIndex += 1;
+    if (movingFeet === 0 && this.cinematicStepClock <= 0) {
+      const turnError = this.planCinematicStepForward();
+      const turning = turnError > CINEMATIC_TURN_DEADBAND;
+      if (!(travelling || worstLag > 0.24 || turning)) return;
+
+      // Each planted pair earns at most one turn slice. Give the thorax time to
+      // consume that slice before aiming another pair farther around the corner;
+      // otherwise the planned coxa sector can outrun its repaired ±34.5° range.
+      const bodySupportLag = this.cinematicPlanarAngle(
+        this.bodyForward,
+        this.cinematicSupportForward,
+      );
+      if (turning && bodySupportLag > CINEMATIC_MAX_BODY_SUPPORT_LAG) return;
+
+      const group = this.selectCinematicStepGroup(turnError, travelling);
+      this.cinematicStepFramePending = true;
       this.cinematicStepClock = travelling ? 0.025 : 0.08;
-      for (const legId of group) this.beginCinematicStep(legId, travelling);
+      for (const legId of group) {
+        this.beginCinematicStep(legId, travelling, this.cinematicStepForward);
+      }
+    }
+  }
+
+  /** Captures one sign-stable support normal for every part of a landing plan. */
+  private updateCinematicPlanningUp(): void {
+    const supportUp = this.bodyPose.frame.up;
+    this.cinematicPlanningUp.set(supportUp.x, supportUp.y, supportUp.z);
+    if (this.cinematicPlanningUp.lengthSq() <= 1e-8) {
+      this.cinematicPlanningUp.copy(this.bodyUp);
+    } else {
+      this.cinematicPlanningUp.normalize();
+    }
+    if (this.cinematicPlanningUp.dot(this.bodyUp) < 0) {
+      this.cinematicPlanningUp.negate();
+    }
+  }
+
+  /** Unsigned heading angle after both directions are made tangent to support. */
+  private cinematicPlanarAngle(a: Vec3Like, b: Vec3Like): number {
+    this.contactDir
+      .set(a.x, a.y, a.z)
+      .addScaledVector(this.cinematicPlanningUp, -(
+        a.x * this.cinematicPlanningUp.x
+        + a.y * this.cinematicPlanningUp.y
+        + a.z * this.cinematicPlanningUp.z
+      ));
+    this.target
+      .set(b.x, b.y, b.z)
+      .addScaledVector(this.cinematicPlanningUp, -(
+        b.x * this.cinematicPlanningUp.x
+        + b.y * this.cinematicPlanningUp.y
+        + b.z * this.cinematicPlanningUp.z
+      ));
+    if (this.contactDir.lengthSq() <= 1e-8 || this.target.lengthSq() <= 1e-8) {
+      return 0;
+    }
+    this.contactDir.normalize();
+    this.target.normalize();
+    return Math.acos(THREE.MathUtils.clamp(this.contactDir.dot(this.target), -1, 1));
+  }
+
+  /**
+   * Route distance reaches zero before the physical turn is finished. Keep the
+   * public travel state active until the last feet, thorax, and body position
+   * have all caught the destination, or autonomy clears the route too early.
+   */
+  private cinematicArrivalComplete(): boolean {
+    if (!this.route.arrived || this.cinematicStepFramePending) return false;
+    for (const foot of this.cinematicFeet.values()) {
+      if (foot.moving) return false;
+    }
+    // A successfully planned no-op means the body was already at the requested
+    // address. resetCinematicHeading() has also cancelled any stale route yaw.
+    if (!this.route.hasRoute) return true;
+    if (
+      this.cinematicPlanarAngle(this.cinematicSupportForward, this.desiredForward)
+        > CINEMATIC_TURN_DEADBAND
+      || this.cinematicPlanarAngle(this.bodyForward, this.cinematicSupportForward)
+        > CINEMATIC_TURN_DEADBAND
+    ) {
+      return false;
+    }
+    // A route whose endpoint disappeared is not an arrival. Keep ownership of
+    // the intent instead of letting autonomy freeze short of broken silk.
+    if (!this.route.positionAt(this.traversal, 0, this.travelPoint)) return false;
+    this.target
+      .copy(this.travelPoint)
+      .addScaledVector(this.bodyUp, this.config.bodyStandoff);
+    if (this.bodyPosition.distanceTo(this.target) > 0.035) return false;
+    return true;
+  }
+
+  /** Advances the foot-placement heading by one supportable increment. */
+  private planCinematicStepForward(): number {
+    this.sweep
+      .copy(this.cinematicSupportForward)
+      .addScaledVector(
+        this.cinematicPlanningUp,
+        -this.cinematicSupportForward.dot(this.cinematicPlanningUp),
+      );
+    if (this.sweep.lengthSq() <= 1e-8) this.sweep.copy(this.bodyForward);
+    this.sweep.normalize();
+
+    this.sweepScratch
+      .copy(this.desiredForward)
+      .addScaledVector(
+        this.cinematicPlanningUp,
+        -this.desiredForward.dot(this.cinematicPlanningUp),
+      );
+    if (this.sweepScratch.lengthSq() <= 1e-8) this.sweepScratch.copy(this.sweep);
+    this.sweepScratch.normalize();
+
+    const cosine = THREE.MathUtils.clamp(this.sweep.dot(this.sweepScratch), -1, 1);
+    this.direction.crossVectors(this.sweep, this.sweepScratch);
+    const signedTurn = Math.atan2(this.direction.dot(this.cinematicPlanningUp), cosine);
+    const supportedTurn = THREE.MathUtils.clamp(
+      signedTurn,
+      -CINEMATIC_TURN_PER_STEP,
+      CINEMATIC_TURN_PER_STEP,
+    );
+    this.cinematicStepForward
+      .copy(this.sweep)
+      .applyAxisAngle(this.cinematicPlanningUp, supportedTurn)
+      .normalize();
+    return Math.abs(signedTurn);
+  }
+
+  /** During a turn, move the pair furthest from the planned stance first. */
+  private selectCinematicStepGroup(
+    turnError: number,
+    travelling: boolean,
+  ): readonly SpiderLegId[] {
+    let worstNormalizedResidual = 0;
+    for (const legId of SPIDER_LEG_IDS) {
+      const result = this.ik.getResult(legId);
+      if (!result || !Number.isFinite(result.residual)) continue;
+      worstNormalizedResidual = Math.max(
+        worstNormalizedResidual,
+        result.residual / Math.max(1e-3, this.rig.legs[legId].reach.max),
+      );
     }
 
-    for (const legId of SPIDER_LEG_IDS) {
-      const state = this.cinematicFeet.get(legId)!;
-      if (state.moving) {
-        state.elapsed += dt;
-        const p = THREE.MathUtils.clamp(state.elapsed / state.duration, 0, 1);
-        const eased = p * p * (3 - 2 * p);
-        state.position.copy(state.start).lerp(state.destination, eased);
-        state.position.addScaledVector(this.bodyUp, Math.sin(Math.PI * p) * 0.075);
-        if (p >= 1) {
-          state.position.copy(state.destination);
-          state.moving = false;
-          if (state.address) {
-            this.contacts.get(legId)!.plant(state.address);
-            this.onFootPlant?.(legId, state.address);
-          }
+    // Preserve the clean authored alternating gait on ordinary straight travel.
+    // Once a joint-limited leg is visibly missing its target, however, waiting
+    // for a full four-pair cycle is exactly what winds it behind the thorax.
+    const urgentIK = worstNormalizedResidual > CINEMATIC_IK_URGENCY_THRESHOLD;
+    if (turnError <= CINEMATIC_TURN_DEADBAND && !urgentIK) {
+      const index = this.cinematicGaitIndex % CINEMATIC_GAIT.length;
+      const group = CINEMATIC_GAIT[index];
+      this.cinematicGaitIndex += 1;
+      this.cinematicLastGroupIndex = index;
+      return group;
+    }
+
+    const start = this.cinematicGaitIndex % CINEMATIC_GAIT.length;
+    let bestIndex = -1;
+    let bestScore = Number.NEGATIVE_INFINITY;
+    for (let offset = 0; offset < CINEMATIC_GAIT.length; offset += 1) {
+      const index = (start + offset) % CINEMATIC_GAIT.length;
+      // The last pair may ask again after one other pair has carried the body,
+      // but never in two consecutive lifts. This supplies a real support swap
+      // without forcing an unhappy leg to wait through all eight feet.
+      if (index === this.cinematicLastGroupIndex && CINEMATIC_GAIT.length > 1) continue;
+      let score = 0;
+      for (const legId of CINEMATIC_GAIT[index]) {
+        this.planCinematicLanding(
+          legId,
+          travelling,
+          this.cinematicStepForward,
+          this.cinematicPlanningUp,
+          this.aim,
+        );
+        score += this.cinematicFeet.get(legId)!.position.distanceTo(this.aim)
+          / Math.max(1e-3, this.rig.legs[legId].reach.max);
+
+        const result = this.ik.getResult(legId);
+        if (result && Number.isFinite(result.residual)) {
+          score += CINEMATIC_IK_URGENCY_WEIGHT
+            * result.residual
+            / Math.max(1e-3, this.rig.legs[legId].reach.max);
         }
       }
-      // The procedural target is already continuous; bypass the extra contact
-      // filter so each leg follows the authored arc precisely — but never feed
-      // the solver a point outside the leg's radial workspace. Past maximum
-      // reach the solver stretches into a fold to chase the point; *inside*
-      // minimum reach it must fold the chain double to shorten it, which is
-      // where the front legs used to dislocate as footholds passed beneath
-      // the body. (solveLeg applies the same clamp for the lab path.)
+      if (score > bestScore) {
+        bestScore = score;
+        bestIndex = index;
+      }
+    }
+
+    // Defensive fallback for a future one-group gait definition.
+    if (bestIndex < 0) bestIndex = start;
+    this.cinematicLastGroupIndex = bestIndex;
+    this.cinematicGaitIndex = bestIndex + 1;
+    return CINEMATIC_GAIT[bestIndex];
+  }
+
+  /** Solves visual legs without ever rewriting their planted world anchors. */
+  private solveCinematicFeet(): void {
+    for (const legId of SPIDER_LEG_IDS) {
+      const state = this.cinematicFeet.get(legId)!;
+      // The clamp belongs only to this frame's IK request. Mutating the
+      // persistent position here drags a planted foot around the moving coxa's
+      // reach sphere — the literal spiral this state is meant to prevent.
       const leg = this.rig.legs[legId];
       leg.chain[0].getWorldPosition(this.coxa);
       this.scratch.copy(state.position).sub(this.coxa);
@@ -651,52 +1027,75 @@ export class SpiderChoreographer {
       const maximumReach = this.maximumVisualReach(legId);
       const minimumReach = leg.reach.min;
       if (targetDistance > maximumReach && targetDistance > 1e-6) {
-        state.position.copy(this.coxa).addScaledVector(this.scratch, maximumReach / targetDistance);
-        this.ik.solve(legId, state.position);
+        this.target.copy(this.coxa).addScaledVector(this.scratch, maximumReach / targetDistance);
+        this.ik.solve(legId, this.target);
       } else if (targetDistance < minimumReach && targetDistance > 1e-6) {
-        state.position.copy(this.coxa).addScaledVector(this.scratch, minimumReach / targetDistance);
-        this.ik.solve(legId, state.position);
+        this.target.copy(this.coxa).addScaledVector(this.scratch, minimumReach / targetDistance);
+        this.ik.solve(legId, this.target);
       } else {
         this.ik.solve(legId, state.position);
       }
     }
   }
 
-  private beginCinematicStep(legId: SpiderLegId, travelling: boolean): void {
-    const state = this.cinematicFeet.get(legId)!;
+  /** Builds the exact target used by both turn ranking and the eventual swing. */
+  private planCinematicLanding(
+    legId: SpiderLegId,
+    travelling: boolean,
+    landingForward: THREE.Vector3,
+    landingUp: THREE.Vector3,
+    target: THREE.Vector3,
+  ): StrandAddress | null {
     const leg = this.rig.legs[legId];
-    state.start.copy(state.position);
-    this.stanceHome(legId, state.destination);
+    this.stanceHome(legId, target, landingForward, landingUp);
 
     const index = Number(legId[1]);
     if (travelling) {
-      state.destination.addScaledVector(this.desiredForward, 0.18 + (4 - index) * 0.025);
+      target.addScaledVector(landingForward, 0.18 + (4 - index) * 0.025);
     }
-    state.destination.addScaledVector(
-      this.outward(legId),
+    target.addScaledVector(
+      this.outwardForFrame(legId, landingForward, landingUp),
       legId[1] === "1" ? FRONT_OUTWARD_STEP : DEFAULT_OUTWARD_STEP,
     );
 
     // Nearby silk attracts the performance target, but only partially. The
     // authored stance wins if exact contact would fold a leg under the body.
-    const hit = this.traversal.findClosestPoint(state.destination, {
+    const hit = this.traversal.findClosestPoint(target, {
       maximumDistance: 0.72,
       traversableOnly: true,
     });
-    state.address = hit?.address ?? null;
     if (hit) {
-      this.aim.set(hit.position.x, hit.position.y, hit.position.z);
-      state.destination.lerp(this.aim, hit.distance < 0.18 ? 0.24 : 0.1);
+      this.target.set(hit.position.x, hit.position.y, hit.position.z);
+      target.lerp(this.target, hit.distance < 0.18 ? 0.24 : 0.1);
     }
 
     // Keep the target comfortably solvable. IK shapes the leg; it never gets a
     // vote on whether the body may continue along the route.
     leg.chain[0].getWorldPosition(this.coxa);
-    this.scratch.copy(state.destination).sub(this.coxa);
+    this.scratch.copy(target).sub(this.coxa);
     const maximum = this.maximumVisualReach(legId, 0.93);
     if (this.scratch.length() > maximum) {
-      state.destination.copy(this.coxa).add(this.scratch.setLength(maximum));
+      target.copy(this.coxa).add(this.scratch.setLength(maximum));
     }
+    return hit?.address ?? null;
+  }
+
+  private beginCinematicStep(
+    legId: SpiderLegId,
+    travelling: boolean,
+    landingForward: THREE.Vector3,
+  ): void {
+    const state = this.cinematicFeet.get(legId)!;
+    state.start.copy(state.position);
+    const index = Number(legId[1]);
+    state.address = this.planCinematicLanding(
+      legId,
+      travelling,
+      landingForward,
+      this.cinematicPlanningUp,
+      state.destination,
+    );
+    state.up.copy(this.cinematicPlanningUp);
 
     const contact = this.contacts.get(legId)!;
     if (contact.isPlanted) {
@@ -766,6 +1165,10 @@ export class SpiderChoreographer {
     }
 
     this.alignBodyFrame(frame.up, dt);
+    // The contact-driven gait consumes desiredForward for leash and step lead.
+    // Preserve its historical meaning as the normalized surface-tangent travel
+    // direction; cinematic locomotion keeps the raw route direction separately.
+    this.desiredForward.copy(this.frameForward);
 
     // Real body velocity drives the lean and the abdomen lag.
     if (dt > 0) {
@@ -800,7 +1203,11 @@ export class SpiderChoreographer {
    * an equivalent contact normal can flip the spider over. Building two proper
    * frames and slerping them keeps all three axes orthogonal through the turn.
    */
-  private alignBodyFrame(supportUp: Vec3Like, dt: number): void {
+  private alignBodyFrame(
+    supportUp: Vec3Like,
+    dt: number,
+    targetForward: Vec3Like = this.desiredForward,
+  ): void {
     this.desiredUp.set(supportUp.x, supportUp.y, supportUp.z);
     if (this.desiredUp.lengthSq() <= 1e-8) {
       this.desiredUp.copy(this.bodyUp);
@@ -814,29 +1221,30 @@ export class SpiderChoreographer {
     if (this.desiredUp.dot(this.bodyUp) < 0) this.desiredUp.negate();
 
     // Anterior follows travel, but travel must be tangent to the support plane.
-    this.desiredForward.addScaledVector(
+    this.frameForward.set(targetForward.x, targetForward.y, targetForward.z);
+    this.frameForward.addScaledVector(
       this.desiredUp,
-      -this.desiredForward.dot(this.desiredUp),
+      -this.frameForward.dot(this.desiredUp),
     );
-    if (this.desiredForward.lengthSq() <= 1e-8) {
-      this.desiredForward
+    if (this.frameForward.lengthSq() <= 1e-8) {
+      this.frameForward
         .copy(this.bodyForward)
         .addScaledVector(this.desiredUp, -this.bodyForward.dot(this.desiredUp));
     }
-    if (this.desiredForward.lengthSq() <= 1e-8) {
+    if (this.frameForward.lengthSq() <= 1e-8) {
       const frameForward = this.bodyPose.frame.forward;
-      this.desiredForward
+      this.frameForward
         .set(frameForward.x, frameForward.y, frameForward.z)
-        .addScaledVector(this.desiredUp, -this.desiredForward.dot(this.desiredUp));
+        .addScaledVector(this.desiredUp, -this.frameForward.dot(this.desiredUp));
     }
-    if (this.desiredForward.lengthSq() <= 1e-8) {
+    if (this.frameForward.lengthSq() <= 1e-8) {
       // This should only be reachable for corrupt/degenerate support data. Keep
       // the last valid complete orientation instead of snapping to a world axis.
       return;
     }
-    this.desiredForward.normalize();
-    this.desiredRight.crossVectors(this.desiredForward, this.desiredUp).normalize();
-    this.desiredUp.crossVectors(this.desiredRight, this.desiredForward).normalize();
+    this.frameForward.normalize();
+    this.desiredRight.crossVectors(this.frameForward, this.desiredUp).normalize();
+    this.desiredUp.crossVectors(this.desiredRight, this.frameForward).normalize();
 
     // Re-orthonormalize the held frame before turning it into a quaternion.
     this.bodyRight.crossVectors(this.bodyForward, this.bodyUp);
@@ -853,7 +1261,7 @@ export class SpiderChoreographer {
     this.desiredFrameMatrix.makeBasis(
       this.desiredRight,
       this.desiredUp,
-      this.scratch.copy(this.desiredForward).negate(),
+      this.scratch.copy(this.frameForward).negate(),
     );
     this.currentFrameOrientation.setFromRotationMatrix(this.currentFrameMatrix);
     this.desiredFrameOrientation.setFromRotationMatrix(this.desiredFrameMatrix);
@@ -1261,7 +1669,16 @@ export class SpiderChoreographer {
    * `bodyForward x bodyUp` runs positive toward the right legs.
    */
   private outward(legId: SpiderLegId): THREE.Vector3 {
-    this.bodyRight.crossVectors(this.bodyForward, this.bodyUp).normalize();
+    return this.outwardForFrame(legId, this.bodyForward, this.bodyUp);
+  }
+
+  /** Unit outward vector for an explicit planned landing frame. */
+  private outwardForFrame(
+    legId: SpiderLegId,
+    forward: THREE.Vector3,
+    up: THREE.Vector3,
+  ): THREE.Vector3 {
+    this.bodyRight.crossVectors(forward, up).normalize();
     return legId[0] === "R" ? this.bodyRight : this.bodyRight.negate();
   }
 
@@ -1287,7 +1704,12 @@ export class SpiderChoreographer {
   }
 
   /** Returns the procedural home target in a prograde black-widow sector. */
-  private stanceHome(legId: SpiderLegId, target: THREE.Vector3): THREE.Vector3 {
+  private stanceHome(
+    legId: SpiderLegId,
+    target: THREE.Vector3,
+    forward: THREE.Vector3 = this.bodyForward,
+    up: THREE.Vector3 = this.bodyUp,
+  ): THREE.Vector3 {
     const leg = this.rig.legs[legId];
     leg.footHome.getWorldPosition(target);
     leg.chain[0].getWorldPosition(this.coxa);
@@ -1296,18 +1718,20 @@ export class SpiderChoreographer {
     // Keep the authored height and radial distance, but rotate the plan-view
     // component into the leg's anatomical fore/aft sector. This changes stance,
     // not anatomy: IK still follows the repaired rest arch and exact lengths.
-    const vertical = this.scratch.dot(this.bodyUp);
+    const vertical = this.scratch.dot(up);
     const planarLength = Math.sqrt(Math.max(0, this.scratch.lengthSq() - vertical * vertical));
     const sector = THREE.MathUtils.degToRad(LEG_SECTOR_DEGREES[legId[1] as "1" | "2" | "3" | "4"]);
     this.contactDir
-      .copy(this.bodyForward)
+      .copy(forward)
+      .addScaledVector(up, -forward.dot(up))
+      .normalize()
       .multiplyScalar(Math.cos(sector))
-      .addScaledVector(this.outward(legId), Math.sin(sector))
+      .addScaledVector(this.outwardForFrame(legId, forward, up), Math.sin(sector))
       .normalize();
     target
       .copy(this.coxa)
       .addScaledVector(this.contactDir, planarLength)
-      .addScaledVector(this.bodyUp, vertical);
+      .addScaledVector(up, vertical);
 
     if (legId[1] !== "1") return target;
     this.scratch.copy(target).sub(this.coxa);

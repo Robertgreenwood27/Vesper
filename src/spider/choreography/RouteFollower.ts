@@ -22,6 +22,8 @@ export class RouteFollower {
   private spans: Span[] = [];
   private total = 0;
   private distance = 0;
+  /** A valid plan whose filtered material distance is already zero. */
+  private zeroDistanceArrival = false;
 
   readonly cursorAddress: { strandId: string; t: number } = { strandId: "", t: 0 };
 
@@ -42,12 +44,13 @@ export class RouteFollower {
   }
 
   get arrived(): boolean {
-    return this.hasRoute && this.remaining <= 1e-3;
+    return this.zeroDistanceArrival || (this.hasRoute && this.remaining <= 1e-3);
   }
 
   setRoute(route: PlannedRoute): void {
     this.spans = [];
     this.total = 0;
+    this.zeroDistanceArrival = false;
     for (const leg of route.legs) {
       const length = Math.abs(leg.materialDistance);
       if (length <= 1e-6) {
@@ -63,12 +66,14 @@ export class RouteFollower {
       this.total += length;
     }
     this.distance = 0;
+    this.zeroDistanceArrival = this.spans.length === 0;
   }
 
   clear(): void {
     this.spans = [];
     this.total = 0;
     this.distance = 0;
+    this.zeroDistanceArrival = false;
   }
 
   /** Moves the cursor forward, never past the end of the route. */
