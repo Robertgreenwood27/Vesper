@@ -123,18 +123,28 @@ const key = new THREE.DirectionalLight(0xbfd4ff, 2.2);
 key.position.set(3, 6, 2);
 key.castShadow = !mobileExperience;
 scene.add(key);
-const rim = new THREE.DirectionalLight(0xff7a5c, 1.4);
+const rim = new THREE.DirectionalLight(0xff7a5c, 0.95);
 rim.position.set(-4, 1.5, -3.5);
 scene.add(rim);
 const fill = new THREE.DirectionalLight(0x6f86b8, 0.7);
 fill.position.set(-2, -3, 3);
 scene.add(fill);
+// The cold edge. It comes in low from the side the warm lamp does not reach,
+// and its only job is to draw one pale line down her silhouette. Black needs a
+// boundary more than it needs brightness — without this she either dissolves
+// into the background or has to be lifted until she stops being black.
+const coolKick = new THREE.DirectionalLight(0xa8c8ff, 2.8);
+coolKick.position.set(7.5, 3.2, -6.5);
+scene.add(coolKick);
 const redLamp = new THREE.PointLight(0xd31228, 0, 26, 1.8);
 redLamp.position.set(2, 9, 4);
 scene.add(redLamp);
-const WARM_POINT_INTENSITY = 55;
-const WARM_WASH_INTENSITY = 620;
-const WARM_FILL_INTENSITY = 1.15;
+const WARM_POINT_INTENSITY = 44;
+const WARM_WASH_INTENSITY = 500;
+// The broad flat amber directional. It is the one warm source with no falloff,
+// so it paints every surface at once and is the cheapest place to buy back
+// neutrality; the spot below still carries the room's warmth where it matters.
+const WARM_FILL_INTENSITY = 0.62;
 const cornerLamp = new THREE.PointLight(0xffb45f, WARM_POINT_INTENSITY, 30, 1.55);
 cornerLamp.position.set(-7.25, 12.5, 4.75);
 scene.add(cornerLamp);
@@ -1697,15 +1707,78 @@ function setStatus(text: string): void {
 }
 
 /**
+ * The little sky she reflects.
+ *
+ * A black object does not look black because it is dark — it looks black
+ * because its highlights are *colder* than the room and its diffuse falls off
+ * fast. Under a warm lamp alone, near-black chitin has nothing to reflect but
+ * amber, and amber on black is brown. So she carries her own environment: a
+ * cool slate zenith fading to near-nothing at her feet, with one warm patch
+ * placed where the corner lamp actually sits so her sheen still belongs to this
+ * room. Every reflection she throws comes from here, which is what keeps her
+ * black no matter how warm the habitat gets.
+ */
+function buildChitinEnvironment(): THREE.Texture {
+  const canvas = document.createElement("canvas");
+  canvas.width = 256;
+  canvas.height = 128;
+  const ctx = canvas.getContext("2d");
+  if (ctx) {
+    const sky = ctx.createLinearGradient(0, 0, 0, canvas.height);
+    // Weighted low and dropping off fast. A broad bright sky would coat the
+    // whole dorsal curve in even grey and she would read chalky; a narrow band
+    // near the zenith gives her one moving highlight and leaves the rest black.
+    sky.addColorStop(0, "#3d4c63"); // zenith: cold, the light she reflects
+    sky.addColorStop(0.2, "#161b23");
+    sky.addColorStop(0.45, "#080a0e"); // horizon: the dark she sits in
+    sky.addColorStop(1, "#050403");
+    ctx.fillStyle = sky;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    // The corner lamp, as she sees it. Warm, small, and off to one side — a
+    // glint rather than a wash, so it lands as highlight instead of tint.
+    const lamp = ctx.createRadialGradient(190, 38, 0, 190, 38, 70);
+    lamp.addColorStop(0, "rgba(255, 186, 108, 0.85)");
+    lamp.addColorStop(0.4, "rgba(190, 118, 58, 0.28)");
+    lamp.addColorStop(1, "rgba(120, 70, 30, 0)");
+    ctx.fillStyle = lamp;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+  }
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.mapping = THREE.EquirectangularReflectionMapping;
+  texture.colorSpace = THREE.SRGBColorSpace;
+  return texture;
+}
+
+/**
+ * How hard her surface grade is pushing, 0..1.
+ *
+ * The grade exists to answer the habitat's amber lamp. Under the red
+ * observation light there is no amber lamp — and desaturating her there would
+ * strip off the very red the mode exists to show — so it dials to nothing.
+ */
+const widowGradeStrength = { value: 1 };
+
+/**
  * Dresses her in the model's original authored material.
  *
  * The GLB ships an untextured pure-white `MeshStandardMaterial` — it is a rig
  * deliverable, not an art asset — but the mesh kept its UVs, so the original
  * texture set drops straight back on: painted near-black chitin with the red
- * hourglass where it belongs, an authored roughness map that keeps her matte
- * with a believable sheen, and a normal map for the fine surface detail.
- * Textures loaded outside GLTFLoader default to `flipY = true`, which would
- * mirror every map against glTF's UV convention — hence the explicit false.
+ * hourglass where it belongs, an authored roughness map, and a normal map for
+ * the fine surface detail. Textures loaded outside GLTFLoader default to
+ * `flipY = true`, which would mirror every map against glTF's UV convention —
+ * hence the explicit false.
+ *
+ * The maps are the model's; the surface response is not. A pure matte black
+ * has only one way to show itself — diffuse — and diffuse is albedo times
+ * whatever colour the room happens to be. Real cuticle is waxy: most of what
+ * you see off a live widow is a broad specular skin sitting on top of the
+ * pigment, and that skin reflects the *sky*, not the lamp. Clearcoat gives her
+ * that skin, kept deliberately soft so it spreads across the whole curve
+ * instead of pinning a hard hotspot on any one polygon — which is also what
+ * keeps the mesh's small seams and faceting from being pointed at. Sheen adds
+ * the cold grazing-angle rim off her setae that separates her from the dark.
  */
 function dressAsWidow(mesh: THREE.SkinnedMesh): void {
   const loader = new THREE.TextureLoader();
@@ -1716,13 +1789,104 @@ function dressAsWidow(mesh: THREE.SkinnedMesh): void {
     return texture;
   };
 
-  const widow = new THREE.MeshStandardMaterial({
+  const widow = new THREE.MeshPhysicalMaterial({
     map: load("/assets/spider/textures/widow_basecolor.png", true),
     roughnessMap: load("/assets/spider/textures/widow_roughness.png", false),
     normalMap: load("/assets/spider/textures/widow_normal.png", false),
-    roughness: 1,
+    // The painted albedo is already near-black, but the habitat lamps are
+    // strong enough that five percent of a very large amber number is still
+    // saturated amber — which is the entire reason her legs came out tan. This
+    // multiplier is dark and cool: it drops her diffuse far enough down the
+    // tone curve that pigment reads as pigment again, and cools what survives.
+    color: new THREE.Color(0x6a707c),
+    // Chitin is closer to wet than to dull. Roughing her right down spread
+    // every highlight into a broad pale film across the whole body, which is
+    // exactly what chalk is; tightening it back up gathers that same light into
+    // a smaller, brighter place and lets the rest of her go black. The soft
+    // clearcoat below is what keeps seams from getting picked out, so the base
+    // layer no longer has to buy that with dullness.
+    roughness: 0.62,
     metalness: 0,
+    // Specular takes the colour of the light, not the surface — and a leg is a
+    // thin cylinder, so every pixel of it faces the camera at a grazing angle
+    // where Fresnel pushes the highlight to full white no matter what tint you
+    // give it. That is what gilded her legs amber. The tint still helps at the
+    // fatter angles; the intensity cut is what actually buys the legs back.
+    specularColor: new THREE.Color(0x9fb4d4),
+    specularIntensity: 0.45,
+    // The waxy layer over the pigment. Broad and soft so it drapes the whole
+    // curve rather than pinning a hotspot on one polygon — this is the thing
+    // covering for the mesh's seams now that the base coat is glossy.
+    clearcoat: 0.38,
+    clearcoatRoughness: 0.47,
+    // Sheen is a velvet lobe — it is the shader's model for dusty fibre, and
+    // turned up it will make anything look like felt. She has setae, so it is
+    // not zero, but it was the loudest voice in the chalk.
+    sheen: 0.05,
+    sheenColor: new THREE.Color(0x93aacb),
+    sheenRoughness: 0.8,
+    // Her cool sky, kept dim. A bright environment on a black body is a grey
+    // film over all of it, which is the same problem from a third direction.
+    envMap: buildChitinEnvironment(),
+    envMapIntensity: 0.5,
   });
+
+  // The last of it is a grade, not a light.
+  //
+  // Everything above fights the amber before it lands. This handles what gets
+  // through: at grazing angles — which on a leg is every angle — Fresnel drives
+  // the highlight toward full white regardless of any tint the material asks
+  // for, so the only place left to answer a warm room is after the shading is
+  // done. Her surface gets pulled most of the way to its own luminance and
+  // nudged cool; the habitat keeps every bit of its warmth, because the grade
+  // is hers alone. The hourglass is masked out by its own chroma — it is the
+  // one thing on her that is supposed to hold its colour.
+  widow.onBeforeCompile = (shader) => {
+    shader.uniforms.widowGrade = widowGradeStrength;
+    shader.fragmentShader = shader.fragmentShader
+      .replace("void main() {", "uniform float widowGrade;\nvoid main() {")
+      .replace(
+        "#include <opaque_fragment>",
+        /* glsl */ `
+      float widowChroma = diffuseColor.r - max( diffuseColor.g, diffuseColor.b );
+      float widowMark = smoothstep( 0.004, 0.02, widowChroma );
+      float widowPull = ( 1.0 - widowMark ) * widowGrade;
+      float widowLuma = dot( outgoingLight, vec3( 0.2126, 0.7152, 0.0722 ) );
+      // Take out amber, and only amber.
+      //
+      // Desaturating by brightness cannot win this: pull everything toward its
+      // luminance and she is chalky, pull only the mid-tones and the bright
+      // leg glints stay gilded, because a bright warm glint is exactly what a
+      // brightness rule protects. So the rule is about hue instead. This
+      // measures how far each pixel leans red-over-blue and greys it in
+      // proportion — amber gets taken out wherever it lands, however bright,
+      // while neutrals stay put and the cool rim keeps every bit of its colour.
+      // Nothing uniform is ever laid over her, which is what chalk was.
+      float widowWarm = clamp(
+        ( outgoingLight.r - outgoingLight.b ) / max( widowLuma, 1e-4 ),
+        0.0,
+        1.0
+      );
+      outgoingLight = mix( outgoingLight, vec3( widowLuma ), 0.85 * widowWarm * widowPull );
+      outgoingLight *= mix( vec3( 1.0 ), vec3( 0.9, 0.97, 1.1 ), widowPull );
+      // Set a black point. Whatever faint even wash survives all of the above
+      // is the chalk itself; taking a small constant off the bottom drops it to
+      // true black and leaves everything brighter standing where it was.
+      outgoingLight = max( outgoingLight - 0.014 * widowPull, vec3( 0.0 ) );
+      // Desaturating alone leaves flat mid-grey, which is not black either.
+      // Black is a contrast shape: the shadowed nine tenths of her fall to
+      // nothing and a thin bright edge carries the whole read. Steepening the
+      // curve buys that without ever touching the room's exposure.
+      outgoingLight = mix(
+        outgoingLight,
+        pow( max( outgoingLight, vec3( 0.0 ) ), vec3( 1.18 ) ) * 1.3,
+        widowGrade
+      );
+      #include <opaque_fragment>
+      `,
+      );
+  };
+
   mesh.material = widow;
   mesh.castShadow = true;
   mesh.receiveShadow = true;
@@ -2555,12 +2719,17 @@ function toggleLights(button: HTMLButtonElement): void {
   redWatch = !redWatch;
   button.setAttribute("aria-pressed", String(redWatch));
   habitat.classList.toggle("red-watch", redWatch);
-  redLamp.intensity = redWatch ? 3.2 : 0;
+  // Her cuticle absorbs more than it used to, so the observation lamp is turned
+  // up to put red mode back where it read before — still barely there, which is
+  // the point of it.
+  redLamp.intensity = redWatch ? 5.4 : 0;
   cornerLamp.intensity = redWatch ? 0.25 : WARM_POINT_INTENSITY;
   warmWash.intensity = redWatch ? 0 : WARM_WASH_INTENSITY;
   warmFill.intensity = redWatch ? 0.04 : WARM_FILL_INTENSITY;
   key.intensity = redWatch ? 0.42 : 2.2;
   fill.intensity = redWatch ? 0.16 : 0.7;
+  coolKick.intensity = redWatch ? 0.1 : 2.8;
+  widowGradeStrength.value = redWatch ? 0 : 1;
   ambient.intensity = redWatch ? 0.18 : 0.43;
   renderer.toneMappingExposure = redWatch ? 0.72 : 0.88;
 }
