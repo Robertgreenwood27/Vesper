@@ -872,15 +872,38 @@ const web = createCobweb({
   // The lab intentionally exaggerates compliance so it can be measured. The
   // habitat wants a widow's web: taut primary lines, chaotic topology, and only
   // a small local answer when she puts weight down.
-  tautness: tuned("tautness") ?? 0.974,
-  stiffness: tuned("stiffness") ?? 0.92,
+  //
+  // Every strand is laid with a total rest length shorter than the gap it
+  // spans, and a string in pure tension between two points is a straight line —
+  // so tautness is what makes the web straight, geometrically rather than as a
+  // matter of degree. At 5% pre-strain nothing has enough spare length left to
+  // hang in a curve.
+  tautness: tuned("tautness") ?? 0.95,
+  // Near-inextensible, so the pre-strain is actually held instead of quietly
+  // stretching back out to the span it was meant to be pulling against.
+  stiffness: tuned("stiffness") ?? 0.99,
   damping: tuned("damping") ?? 0.68,
-  linearDensity: tuned("density") ?? 0.005,
+  // Silk mass is doing two jobs that pull in opposite directions, so it is set
+  // together with the solver's gravity below rather than on its own.
+  //
+  // Droop is mass times gravity. The snap back when her foot lets go is mass
+  // alone — the line returns at a rate set by its inertia against its tension,
+  // and silk light enough never to sag is also light enough to return inside a
+  // single frame, which is not a snap, it is a jump cut. So the mass goes back
+  // up to give the release something to take time over, and gravity comes down
+  // by the same factor to keep their product — the sag — where it is.
+  linearDensity: tuned("density") ?? 0.0055,
   seed: tuned("seed"),
 });
 const solver = new WebPhysicsSolver(web.network, {
-  gravityY: -2.6,
-  iterations: 15,
+  // The other half of the silk-mass trade above. Mass went up 4.6x to make the
+  // snap visible; gravity comes down 4.7x so mass times gravity — which is all
+  // the sag ever was — lands back where the straight web left it.
+  gravityY: -0.55,
+  // Stiff constraints need more passes to converge. Left at 15 the solver ran
+  // out of iterations before the pre-tension had propagated through the tangle,
+  // and the slack it failed to take up looked exactly like sag.
+  iterations: 24,
   maximumStrain: 1.4,
 });
 const fullSolverIterations = solver.settings.iterations;
@@ -968,7 +991,16 @@ const SHOWCASE_CHOREOGRAPHY = {
   // mid-route read as hesitation, not thought.
   pauseChancePerSecond: 0.08,
   pauseDuration: { min: 0.1, max: 0.35 },
-  bodyWeight: 0.95,
+  // How hard she pulls the silk down where she stands, in newtons. This is the
+  // only thing the number is used for, so it is a look dial rather than a claim
+  // about her mass.
+  //
+  // The kink at her foot is a ratio, not a force: a point load P on a line held
+  // at tension T deflects by P·L/(4T), and the web is now pulled tight enough
+  // that under a whole newton spread across eight feet the bend was there in
+  // the arithmetic and invisible on screen. Raised until one foot visibly takes
+  // the line down with it.
+  bodyWeight: 13,
   // Repaired-rest joint limits, including the coxa's broader anatomical sector.
   // See ChoreographyConfig.jointLimitScale.
   jointLimitScale: 1.15,

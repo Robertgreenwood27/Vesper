@@ -227,20 +227,22 @@ export function createCobweb(options: CobwebOptions = {}): Cobweb {
   // jar, the way a real widow claims one corner of an enclosure.
 
   // Lid anchors — silk hooked into the mesh above the tangle.
-  for (let i = 0; i < 5; i += 1) {
+  for (let i = 0; i < 16; i += 1) {
     const [x, z] = insideGlass(rng.range(-6 * LS, 3 * LS), rng.range(-6 * LS, 3 * LS), 0.7 * LS);
     addHub("LID", x, CEILING, z, true);
   }
 
   // Glass anchors — on the curved wall, clustered around the retreat side.
   // (Silk does hold on clean glass; it just holds better on everything else.)
+  // Still lopsided toward the retreat, but the spread is wider now: with this
+  // many lines, keeping them all in one arc reads as a fan rather than a web.
   const retreatAzimuth = Math.atan2(-5.5 * LS, -5 * LS);
-  for (let i = 0; i < 7; i += 1) {
-    const theta = retreatAzimuth + rng.range(-0.95, 0.95);
+  for (let i = 0; i < 22; i += 1) {
+    const theta = retreatAzimuth + rng.range(-1.7, 1.7);
     addHub(
       "GLASS",
       enclosure.centerX + Math.cos(theta) * (enclosure.radius - 0.03),
-      rng.range(2.5 * LS, CEILING - LS),
+      rng.range(1.4 * LS, CEILING - 0.4 * LS),
       enclosure.centerZ + Math.sin(theta) * (enclosure.radius - 0.03),
       true,
     );
@@ -264,18 +266,22 @@ export function createCobweb(options: CobwebOptions = {}): Cobweb {
 
   // Ground anchors for the gumfoot lines: rock tops and open substrate.
   const floorAnchors: Hub[] = [];
-  for (const rock of enclosure.rocks.slice(0, 2)) {
-    floorAnchors.push(
-      addHub(
-        "ROCK",
-        rock.x + rng.range(-0.3, 0.3) * rock.radius,
-        rock.radius * 1.1,
-        rock.z + rng.range(-0.3, 0.3) * rock.radius,
-        true,
-      ),
-    );
+  for (const rock of enclosure.rocks) {
+    // Two holds per stone rather than one. A gumfoot line pulls hard and a real
+    // widow does not trust a whole trap to a single point of contact.
+    for (let i = 0; i < 2; i += 1) {
+      floorAnchors.push(
+        addHub(
+          "ROCK",
+          rock.x + rng.range(-0.5, 0.5) * rock.radius,
+          rock.radius * 1.1,
+          rock.z + rng.range(-0.5, 0.5) * rock.radius,
+          true,
+        ),
+      );
+    }
   }
-  for (let i = 0; i < 3; i += 1) {
+  for (let i = 0; i < 14; i += 1) {
     const [x, z] = insideGlass(rng.range(-5 * LS, 4 * LS), rng.range(-5 * LS, 3.5 * LS), 1.2 * LS);
     floorAnchors.push(addHub("SUBSTRATE", x, FLOOR, z, true));
   }
@@ -342,7 +348,7 @@ export function createCobweb(options: CobwebOptions = {}): Cobweb {
     for (const other of nearestOf(tangle, hub, 6)) {
       addSpan(hub, other);
     }
-    for (const anchor of nearestOf(anchors, hub, 3)) {
+    for (const anchor of nearestOf(anchors, hub, 7)) {
       addSpan(hub, anchor);
     }
   }
@@ -362,7 +368,7 @@ export function createCobweb(options: CobwebOptions = {}): Cobweb {
   // --- Gumfoot lines ---------------------------------------------------------
   // Taut verticals to the floor: the widow's signature and her trap.
   for (const anchor of floorAnchors) {
-    for (const hub of nearestOf(tangle, anchor, 1)) {
+    for (const hub of nearestOf(tangle, anchor, 2)) {
       addStrand(network, nextStrandId(), hub, anchor, { ...build, slackFactor: tautness - 0.008 });
     }
   }
