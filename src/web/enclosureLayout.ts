@@ -53,7 +53,12 @@ export function createEnclosureLayout(legSpan: number): EnclosureLayout {
       // the tangle so the web has honest mid-air wood to hold.
       { base: [1.5 * LS, 0, 3.0 * LS], tip: [-3.5 * LS, 7.8 * LS, -3.0 * LS], radius: 0.16 * LS },
       // A short fork on the bright side, where the crate's anchors used to be.
-      { base: [3.4 * LS, 0, 2.4 * LS], tip: [2.2 * LS, 3.5 * LS, 1.3 * LS], radius: 0.13 * LS },
+      // Its foot used to sit at 6.66 legspans from the axis — just past the 6.6
+      // the glass is drawn at — so the branch was planted fractionally outside
+      // its own jar. A thin dowel hid that; wood of honest thickness leant
+      // straight through the wall. Pulled in far enough that the girth and the
+      // bow clear too, not just the centre line.
+      { base: [2.3 * LS, 0, 1.6 * LS], tip: [1.7 * LS, 3.5 * LS, 0.95 * LS], radius: 0.13 * LS },
       // A stub leaned against the glass on the retreat side.
       { base: [-5.4 * LS, 0, -3.2 * LS], tip: [-6.0 * LS, 5.6 * LS, -5.0 * LS], radius: 0.14 * LS },
     ],

@@ -1,6 +1,7 @@
 import { inject } from "@vercel/analytics";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
+import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import {
   initializeEngagementTracking,
   trackEngagement,
@@ -279,7 +280,15 @@ function buildSubstrate(): void {
   scene.add(pebbles);
 }
 
-function buildStick(spec: (typeof enclosure.sticks)[number]): THREE.Mesh {
+/**
+ * The fallback branch: a tapered, bowed cylinder.
+ *
+ * Kept as the understudy. The scanned wood is five megabytes and arrives over
+ * the network, so something has to hold the enclosure together until it does —
+ * and if it never does, a dowel-ish branch in the right place is a far better
+ * failure than a web anchored to thin air.
+ */
+function buildProceduralStick(spec: (typeof enclosure.sticks)[number]): THREE.Mesh {
   const base = new THREE.Vector3(...spec.base);
   const tip = new THREE.Vector3(...spec.tip);
   const along = tip.clone().sub(base);
@@ -328,6 +337,305 @@ function buildStick(spec: (typeof enclosure.sticks)[number]): THREE.Mesh {
     stick.add(twig);
   }
   return stick;
+}
+
+/** Scanned branch models, in the order the enclosure's sticks ask for them. */
+const STICK_MODEL_URLS = ["/assets/enclosure/stick1.glb"] as const;
+
+/**
+ * How far inside the glass a branch has to stay, in world units.
+ *
+ * Not zero, because the wall is drawn with thickness and a branch that exactly
+ * touches the radius still shows a sliver through it.
+ */
+const STICK_GLASS_MARGIN = 0.35;
+
+/** Roll angles tried when looking for one that keeps a branch inside the glass. */
+const STICK_ROLL_STEPS = 24;
+
+/**
+ * Settles a freshly loaded scan into the habitat's lighting. Call once per
+ * loaded model, before anything clones it.
+ *
+ * The "before anything clones it" is load-bearing. `Object3D.clone` copies the
+ * transform tree but shares material references, so doing this per placement
+ * would multiply the same material down once per copy — three branches would
+ * land at the cube of the intended dim, some thirty times darker than asked
+ * for, and the number in the call would bear no relation to what you see.
+ */
+function settleScanIntoHabitat(root: THREE.Object3D, dim: number, envMapIntensity: number): void {
+  root.traverse((node) => {
+    if (!(node instanceof THREE.Mesh)) return;
+    node.castShadow = true;
+    node.receiveShadow = true;
+    const material = node.material;
+    // These scans were lit for daylight and arrive far too bright for a jar on
+    // a dark shelf. Knock them back so the furniture sits behind the spider
+    // rather than competing with her.
+    if (material instanceof THREE.MeshStandardMaterial) {
+      material.color.multiplyScalar(dim);
+      material.envMapIntensity = envMapIntensity;
+    }
+  });
+}
+
+const overflowProbe = new THREE.Vector3();
+
+/**
+ * How far the worst part of a branch sticks out past the glass, in world units.
+ * Zero or less means it is fully contained.
+ *
+ * This walks real vertices rather than a bounding box on purpose. A bowed
+ * branch stood on a diagonal has a box far bigger than the wood in it, so a box
+ * test would report these as hopeless no matter how they were rolled and the
+ * search above would never find the angle that actually works.
+ */
+function measureGlassOverflow(stick: THREE.Object3D): number {
+  stick.updateMatrixWorld(true);
+  const limit = enclosure.radius - STICK_GLASS_MARGIN;
+  let worst = Number.NEGATIVE_INFINITY;
+  stick.traverse((node) => {
+    if (!(node instanceof THREE.Mesh)) return;
+    const position = node.geometry.getAttribute("position");
+    // A few hundred samples is plenty to find the widest point of a branch, and
+    // this runs once per candidate roll per branch.
+    const stride = Math.max(1, Math.floor(position.count / 400));
+    for (let i = 0; i < position.count; i += stride) {
+      overflowProbe.fromBufferAttribute(position, i).applyMatrix4(node.matrixWorld);
+      const radial = Math.hypot(
+        overflowProbe.x - enclosure.centerX,
+        overflowProbe.z - enclosure.centerZ,
+      );
+      worst = Math.max(worst, radial - limit);
+    }
+  });
+  return worst === Number.NEGATIVE_INFINITY ? 0 : worst;
+}
+
+/**
+ * Stands a scanned branch along the line the layout — and therefore the web —
+ * already agreed on.
+ *
+ * The spec's base and tip are not negotiable: `createCobweb` anchored silk to
+ * them before any of this loaded, so the wood moves to meet the silk rather
+ * than the other way round. The model lies along its own local X, so this is
+ * mostly bookkeeping — recentre it on its own bounds, scale each axis for its
+ * own job, then rotate that X onto the base-to-tip direction.
+ */
+function buildScannedStick(
+  model: THREE.Object3D,
+  spec: (typeof enclosure.sticks)[number],
+  seed: number,
+): THREE.Object3D {
+  const base = new THREE.Vector3(...spec.base);
+  const tip = new THREE.Vector3(...spec.tip);
+  const along = tip.clone().sub(base);
+  const length = along.length();
+
+  const source = model.clone(true);
+  const bounds = new THREE.Box3().setFromObject(source);
+  const size = bounds.getSize(new THREE.Vector3());
+  const center = bounds.getCenter(new THREE.Vector3());
+
+  // Sink the cut end into the substrate so it never floats above the soil.
+  // Length is fitted exactly, with no slimming factor: the silk was anchored at
+  // fractions of this line running out to 0.95, so a branch even slightly short
+  // of its own tip leaves the topmost holds gripping empty air.
+  const sink = 0.5;
+  const scale = (length + sink) / size.x;
+
+  // Recentre on the model's own bounds first, so scaling pivots about the wood
+  // rather than about wherever the exporter happened to leave the origin.
+  const inner = new THREE.Group();
+  source.position.set(-center.x, -center.y, -center.z);
+  inner.add(source);
+  inner.scale.setScalar(scale);
+
+  const stick = new THREE.Group();
+  // Local X runs the length of the scan; put its lower end at the origin.
+  inner.position.x = (size.x * scale) / 2 - sink;
+  stick.add(inner);
+  stick.position.copy(base);
+  stick.position.y += substrateHeight(base.x - enclosure.centerX, base.z - enclosure.centerZ);
+  stick.quaternion.setFromUnitVectors(new THREE.Vector3(1, 0, 0), along.normalize());
+
+  // Roll the branch about its own length until the bow points somewhere that
+  // fits.
+  //
+  // This is what was pushing wood through the glass. The layout's base and tip
+  // both sit well inside the cylinder, but they only describe a line — and a
+  // real branch is not a line. This scan bows about a sixth of its length off
+  // axis, so an eighteen-unit branch swings nearly three units wide, and which
+  // direction it swings is entirely down to how it happens to be rolled. Rolled
+  // outward it leans through the wall. So the roll is chosen rather than
+  // decorative: walk the circle from a per-branch offset and take the first
+  // angle that clears, which keeps the three of them looking different while
+  // guaranteeing they stay inside.
+  const start = seed * 2.399;
+  let bestRoll = start;
+  let bestOverflow = Number.POSITIVE_INFINITY;
+  for (let step = 0; step < STICK_ROLL_STEPS; step += 1) {
+    const roll = start + (step / STICK_ROLL_STEPS) * Math.PI * 2;
+    inner.rotation.x = roll;
+    const overflow = measureGlassOverflow(stick);
+    if (overflow < bestOverflow) {
+      bestOverflow = overflow;
+      bestRoll = roll;
+    }
+    if (overflow <= 0) break;
+  }
+  inner.rotation.x = bestRoll;
+
+  // Nothing fits at any roll — the branch is simply too big for where it was
+  // asked to stand. Take the length down until it clears rather than let it
+  // hang out through the wall, and say so, because the layout is what wants
+  // fixing.
+  if (bestOverflow > 0) {
+    for (let attempt = 0; attempt < 8 && measureGlassOverflow(stick) > 0; attempt += 1) {
+      inner.scale.multiplyScalar(0.94);
+      inner.position.x = (size.x * inner.scale.x) / 2 - sink;
+    }
+    console.warn(
+      `Branch at ${spec.base.join(",")} did not fit the glass at any roll; shortened to clear it.`,
+    );
+  }
+
+  return stick;
+}
+
+/**
+ * Swaps the placeholder branches for the scanned wood once it arrives.
+ *
+ * Only the models that actually exist get used; the layout asks for three
+ * branches and the scans are reused round-robin to fill it, each rolled to a
+ * different angle. Anything that fails to load keeps its procedural stand-in.
+ */
+function loadScannedSticks(placeholders: readonly THREE.Object3D[]): void {
+  const loader = new GLTFLoader();
+  Promise.all(STICK_MODEL_URLS.map((url) => loader.loadAsync(url)))
+    .then((models) => {
+      if (models.length === 0) return;
+      // 0.027 looks like a typo and is not. The wood was approved on screen
+      // while a bug was cubing this number once per branch, so the value that
+      // actually produced that look was 0.3 x 0.3 x 0.3. The bug is fixed; the
+      // result it happened to land on is the one being kept.
+      for (const model of models) settleScanIntoHabitat(model.scene, 0.027, 0.25);
+      enclosure.sticks.forEach((spec, index) => {
+        const model = models[index % models.length];
+        if (!model) return;
+        const stick = buildScannedStick(model.scene, spec, index);
+        scene.add(stick);
+        const placeholder = placeholders[index];
+        if (placeholder) scene.remove(placeholder);
+      });
+    })
+    .catch((error: unknown) => {
+      console.warn("Scanned branches failed to load; keeping placeholders.", error);
+    });
+}
+
+const ROCK_MODEL_URL = "/assets/enclosure/rocks.glb";
+
+/**
+ * How tall a seated rock stands, as a multiple of its spec radius.
+ *
+ * Not a look choice. `createCobweb` hangs its gumfoot lines from hubs placed at
+ * exactly `radius * 1.1` above the floor — the old lumpy icosahedron happened
+ * to top out there, and the silk was anchored to that. So the scans are scaled
+ * to stand the same height rather than to fill the same width, which puts each
+ * rock's crown back under the line already tied to it. Get this wrong and the
+ * gumfoot anchors float above the stones or sink inside them.
+ */
+const ROCK_CROWN = 1.1;
+
+/**
+ * Seats one scanned rock on the substrate where the layout asks for a rock.
+ *
+ * The scan set arrives as a small arrangement around its own origin, so each
+ * stone is first lifted out of that arrangement and re-seated on its own
+ * footprint: centred in x and z, and with its lowest point at zero so it rests
+ * on the soil instead of hovering or sinking by whatever offset it was authored
+ * with.
+ */
+function buildScannedRock(
+  source: THREE.Object3D,
+  spec: (typeof enclosure.rocks)[number],
+): THREE.Object3D {
+  const rock = source.clone(true);
+  rock.position.set(0, 0, 0);
+  rock.rotation.set(0, 0, 0);
+  rock.updateMatrixWorld(true);
+
+  const bounds = new THREE.Box3().setFromObject(rock);
+  const size = bounds.getSize(new THREE.Vector3());
+  const center = bounds.getCenter(new THREE.Vector3());
+  const scale = (spec.radius * ROCK_CROWN) / Math.max(size.y, 1e-4);
+
+  const inner = new THREE.Group();
+  rock.position.set(-center.x, -bounds.min.y, -center.z);
+  inner.add(rock);
+  inner.scale.setScalar(scale);
+
+  const seated = new THREE.Group();
+  seated.add(inner);
+  seated.position.set(
+    spec.x,
+    substrateHeight(spec.x - enclosure.centerX, spec.z - enclosure.centerZ) -
+      // Bed it a little into the soil, the way a stone pressed into substrate
+      // sits rather than balancing on top of it.
+      spec.radius * 0.12,
+    spec.z,
+  );
+  seated.rotation.y = positionHash(spec.x, 0, spec.z) * Math.PI * 2;
+  return seated;
+}
+
+/** Swaps the placeholder rocks for the scanned set once it arrives. */
+function loadScannedRocks(placeholders: readonly THREE.Object3D[]): void {
+  new GLTFLoader()
+    .loadAsync(ROCK_MODEL_URL)
+    .then((model) => {
+      settleScanIntoHabitat(model.scene, 0.34, 0.3);
+
+      // The file is a scatter of separate stones under one parent. Take them as
+      // a pool of individuals rather than dropping the whole arrangement in as
+      // a single lump.
+      const pool: THREE.Mesh[] = [];
+      model.scene.traverse((node) => {
+        if (node instanceof THREE.Mesh) pool.push(node);
+      });
+      if (pool.length === 0) return;
+
+      // Pick the chunkiest stones in the set, tallest relative to their
+      // footprint first.
+      //
+      // Which stones get used is not cosmetic here, because they are scaled to
+      // stand at the silk's anchor height. A scatter set is mostly flat slabs —
+      // five of these seven are barely half as tall as they are wide — and
+      // scaling a slab up until it is tall enough to meet its gumfoot line
+      // makes it enormously wide on the way, so it lands as a paving stone
+      // rather than a rock. The rounder ones reach the same height while
+      // staying a believable width, so they are the ones worth spending on.
+      const footprint = new THREE.Vector3();
+      const chunkiness = new Map<THREE.Mesh, number>();
+      for (const stone of pool) {
+        stone.geometry.computeBoundingBox();
+        stone.geometry.boundingBox?.getSize(footprint);
+        chunkiness.set(stone, footprint.y / Math.max(footprint.x, footprint.z, 1e-4));
+      }
+      const ranked = [...pool].sort((a, b) => (chunkiness.get(b) ?? 0) - (chunkiness.get(a) ?? 0));
+
+      enclosure.rocks.forEach((spec, index) => {
+        const stone = ranked[index % ranked.length];
+        if (!stone) return;
+        scene.add(buildScannedRock(stone, spec));
+        const placeholder = placeholders[index];
+        if (placeholder) scene.remove(placeholder);
+      });
+    })
+    .catch((error: unknown) => {
+      console.warn("Scanned rocks failed to load; keeping placeholders.", error);
+    });
 }
 
 function buildRock(spec: (typeof enclosure.rocks)[number]): THREE.Mesh {
@@ -471,8 +779,18 @@ function buildEnclosure(): void {
   }
 
   buildSubstrate();
-  for (const stick of enclosure.sticks) scene.add(buildStick(stick));
-  for (const rock of enclosure.rocks) scene.add(buildRock(rock));
+  const placeholderSticks = enclosure.sticks.map((stick) => {
+    const mesh = buildProceduralStick(stick);
+    scene.add(mesh);
+    return mesh;
+  });
+  loadScannedSticks(placeholderSticks);
+  const placeholderRocks = enclosure.rocks.map((rock) => {
+    const mesh = buildRock(rock);
+    scene.add(mesh);
+    return mesh;
+  });
+  loadScannedRocks(placeholderRocks);
 
   // Dust hangs inside the glass, not through it.
   const dustCount = mobileExperience ? 220 : 460;
